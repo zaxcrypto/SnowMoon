@@ -45,8 +45,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
-      - name: Install Binaryen (wasm-opt) and wabt (wasm-validate) for MVP WASM verification
-        run: sudo apt-get update && sudo apt-get install -y binaryen wabt
+      - name: Install Binaryen v120 (wasm-opt) and wabt (wasm-validate) for MVP WASM verification
+        run: |
+          sudo apt-get update && sudo apt-get install -y wabt
+          curl -L https://github.com/WebAssembly/binaryen/releases/download/version_120/binaryen-version_120-x86_64-linux.tar.gz | sudo tar -xz -C /usr/local --strip-components=1
+          /usr/local/bin/wasm-opt --version
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "near -> target"
@@ -66,34 +69,8 @@ jobs:
           cp artifacts/production/snapfall_core.wasm target/wasm32-unknown-unknown/release/snapfall_core.wasm
           for w in target/wasm32-unknown-unknown/release/*.wasm artifacts/production/*.wasm; do
             echo "=== Lowering and validating $w as pure MVP WASM ==="
-            wasm-opt -Oz --mvp-features --signext-lowering "$w" -o "$w"
-            python3 -c '
-          import sys
-          path = sys.argv[1]
-          data = open(path, "rb").read()
-          out = bytearray(data[:8])
-          i = 8
-          while i < len(data):
-              sec_id = data[i]
-              i += 1
-              size, shift = 0, 0
-              size_bytes = bytearray()
-              while True:
-                  b = data[i]
-                  size_bytes.append(b)
-                  i += 1
-                  size |= (b & 0x7f) << shift
-                  if (b & 0x80) == 0:
-                      break
-                  shift += 7
-              payload = data[i:i+size]
-              i += size
-              if sec_id != 12:
-                  out.append(sec_id)
-                  out.extend(size_bytes)
-                  out.extend(payload)
-          open(path, "wb").write(out)
-          ' "$w"
+            /usr/local/bin/wasm-opt -Oz --enable-bulk-memory --enable-sign-ext --enable-mutable-globals --enable-nontrapping-float-to-int --llvm-memory-copy-fill-lowering --signext-lowering "$w" -o "$w"
+            /usr/local/bin/wasm-opt -Oz --mvp-features --enable-mutable-globals "$w" -o "$w"
             wasm-validate --disable-saturating-float-to-int --disable-sign-extension --disable-simd --disable-multi-value --disable-bulk-memory --disable-reference-types "$w"
           done
       - name: Run near-workspaces Sandbox integration tests (10 tests)
