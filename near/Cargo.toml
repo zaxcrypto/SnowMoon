@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.dependencies]
-near-sdk = { version = "5", default-features = false, features = ["legacy", "wee_alloc"] }
+near-sdk = { version = "=5.24.0", default-features = false, features = ["legacy", "wee_alloc"] }
 
 [profile.release]
 codegen-units = 1
