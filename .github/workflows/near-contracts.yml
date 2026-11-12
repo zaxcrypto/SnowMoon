@@ -45,15 +45,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
-      - name: Install Binaryen v120 (wasm-opt) and wabt (wasm-validate) for MVP WASM verification
-        run: |
-          sudo apt-get update && sudo apt-get install -y wabt
-          curl -L https://github.com/WebAssembly/binaryen/releases/download/version_120/binaryen-version_120-x86_64-linux.tar.gz | sudo tar -xz -C /usr/local --strip-components=1
-          /usr/local/bin/wasm-opt --version
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: wasm32-unknown-unknown
+          components: rust-src
+      - name: Install Binaryen (wasm-opt) and wabt (wasm-validate) for MVP WASM verification
+        run: sudo apt-get update && sudo apt-get install -y binaryen wabt
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "near -> target"
-          key: rust-stable-mvp
+          key: rust-nightly-build-std-mvp
       - name: Check WASM workspace compilation
         run: cargo check --locked --workspace --exclude sandbox-tests --target wasm32-unknown-unknown
       - name: Run host VM unit tests (snapfall-core + snapfall-audit)
@@ -62,15 +63,14 @@ jobs:
         run: bash ./scripts/package-production-wasm.sh
       - name: Build test-only WASMs for Sandbox suite
         run: |
-          cargo build -p mock-ft --target wasm32-unknown-unknown --release
-          cargo build -p withdraw-helper --target wasm32-unknown-unknown --release
-          cargo build -p snapfall-core --target wasm32-unknown-unknown --release --features test-fail-callback
+          cargo +nightly build -Z build-std=std,panic_abort -p mock-ft --target wasm32-unknown-unknown --release
+          cargo +nightly build -Z build-std=std,panic_abort -p withdraw-helper --target wasm32-unknown-unknown --release
+          cargo +nightly build -Z build-std=std,panic_abort -p snapfall-core --target wasm32-unknown-unknown --release --features test-fail-callback
           cp target/wasm32-unknown-unknown/release/snapfall_core.wasm target/wasm32-unknown-unknown/release/snapfall_core_fail_cb.wasm
           cp artifacts/production/snapfall_core.wasm target/wasm32-unknown-unknown/release/snapfall_core.wasm
           for w in target/wasm32-unknown-unknown/release/*.wasm artifacts/production/*.wasm; do
-            echo "=== Lowering and validating $w as pure MVP WASM ==="
-            /usr/local/bin/wasm-opt -Oz --enable-bulk-memory --enable-sign-ext --enable-mutable-globals --enable-nontrapping-float-to-int --llvm-memory-copy-fill-lowering --signext-lowering "$w" -o "$w"
-            /usr/local/bin/wasm-opt -Oz --mvp-features --enable-mutable-globals "$w" -o "$w"
+            echo "=== Validating $w as pure MVP WASM ==="
+            wasm-opt -Oz --mvp-features --signext-lowering "$w" -o "$w"
             wasm-validate --disable-saturating-float-to-int --disable-sign-extension --disable-simd --disable-multi-value --disable-bulk-memory --disable-reference-types "$w"
           done
       - name: Run near-workspaces Sandbox integration tests (10 tests)

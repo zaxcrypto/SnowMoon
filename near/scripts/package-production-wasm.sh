@@ -16,7 +16,11 @@ mkdir -p "${PROD_OUT}"
 cd "${NEAR_DIR}"
 
 echo "[1/3] Building production WASM artifacts (--no-default-features)..."
-cargo build -p snapfall-core -p snapfall-audit --target wasm32-unknown-unknown --release --no-default-features
+if rustup toolchain list 2>/dev/null | grep -q "^nightly"; then
+  cargo +nightly build -Z build-std=std,panic_abort -p snapfall-core -p snapfall-audit --target wasm32-unknown-unknown --release --no-default-features
+else
+  cargo build -p snapfall-core -p snapfall-audit --target wasm32-unknown-unknown --release --no-default-features
+fi
 
 cp "${NEAR_DIR}/target/wasm32-unknown-unknown/release/snapfall_core.wasm" "${PROD_OUT}/snapfall_core.wasm"
 cp "${NEAR_DIR}/target/wasm32-unknown-unknown/release/snapfall_audit.wasm" "${PROD_OUT}/snapfall_audit.wasm"
