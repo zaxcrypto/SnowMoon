@@ -1,0 +1,12 @@
+# Portable Cargo configuration for the Snapfall NEAR workspace.
+# Do NOT commit machine-specific paths (such as user Temp directories or fixed MSVC version paths) here.
+# On Windows hosts without a system-wide Windows SDK installation, use `near/scripts/with-win-msvc-env.ps1`.
+
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=-reference-types,-multivalue"]
+
+[alias]
+check-wasm = "check --workspace --exclude sandbox-tests --target wasm32-unknown-unknown"
+build-prod-wasm = "build -p snapfall-core -p snapfall-audit --target wasm32-unknown-unknown --release --no-default-features"
+test-unit = "test -p snapfall-core -p snapfall-audit --lib"
+test-sandbox = "test -p sandbox-tests"

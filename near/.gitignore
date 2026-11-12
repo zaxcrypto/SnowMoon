@@ -1,0 +1,5 @@
+target/
+artifacts/
+.cargo/config.local.toml
+**/*.rs.bk
+# Cargo.lock is intentionally tracked: CI must build the exact dependency versions verified locally.

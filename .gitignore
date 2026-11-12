@@ -1,0 +1,53 @@
+# secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+keystores/
+
+# node / bun
+node_modules/
+dist/
+build/
+.next/
+bun.lockb
+
+# foundry
+contracts/out/
+contracts/cache/
+contracts/broadcast/
+# contracts/lib/ is intentionally tracked — forge deps are git submodules
+
+# os / editor
+.DS_Store
+*.log
+
+# sidecar
+sidecar/node_modules/
+
+# daemon (Go)
+daemon/snapfall.db
+daemon/snapfall.db-wal
+daemon/snapfall.db-shm
+daemon/snapfalld
+*.redeploy-guard.json
+*.redeploy-guard.json.pending
+
+# demo run state (V12 seed_demo)
+.demo/
+
+# local editor/preview tooling; the port and port choice are machine-specific
+.claude/launch.json
+.vercel/
+
+# near workspace build artifacts & local toolchain caches
+near/target/
+near/artifacts/
+near/.cargo/config.local.toml
+winsdk_*/
+nasm*/
+*.nupkg

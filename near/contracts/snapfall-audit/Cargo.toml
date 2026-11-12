@@ -1,0 +1,15 @@
+[package]
+name = "snapfall-audit"
+version = "0.1.0"
+edition = "2021"
+description = "Snapfall NEAR AuditAnchor contract with asynchronous verification against snapfall-core"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+near-sdk = { workspace = true }
+
+[dev-dependencies]
+near-sdk = { workspace = true, features = ["unit-testing"] }
+
