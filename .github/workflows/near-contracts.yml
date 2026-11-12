@@ -64,9 +64,37 @@ jobs:
           cargo build -p snapfall-core --target wasm32-unknown-unknown --release --features test-fail-callback
           cp target/wasm32-unknown-unknown/release/snapfall_core.wasm target/wasm32-unknown-unknown/release/snapfall_core_fail_cb.wasm
           cp artifacts/production/snapfall_core.wasm target/wasm32-unknown-unknown/release/snapfall_core.wasm
+          python3 -c '
+          import glob
+          def strip_section_12(path):
+              data = open(path, "rb").read()
+              out = bytearray(data[:8])
+              i = 8
+              while i < len(data):
+                  sec_id = data[i]
+                  i += 1
+                  size, shift = 0, 0
+                  size_bytes = bytearray()
+                  while True:
+                      b = data[i]
+                      size_bytes.append(b)
+                      i += 1
+                      size |= (b & 0x7f) << shift
+                      if (b & 0x80) == 0:
+                          break
+                      shift += 7
+                  payload = data[i:i+size]
+                  i += size
+                  if sec_id != 12:
+                      out.append(sec_id)
+                      out.extend(size_bytes)
+                      out.extend(payload)
+              open(path, "wb").write(out)
+          for w in glob.glob("target/wasm32-unknown-unknown/release/*.wasm") + glob.glob("artifacts/production/*.wasm"):
+              strip_section_12(w)
+          '
           for w in target/wasm32-unknown-unknown/release/*.wasm artifacts/production/*.wasm; do
-            echo "=== Lowering $w to pure MVP WASM ==="
-            wasm-opt -Oz --enable-bulk-memory --llvm-memory-copy-fill-lowering "$w" -o "$w"
+            echo "=== Lowering and validating $w as pure MVP WASM ==="
             wasm-opt -Oz --mvp-features --signext-lowering "$w" -o "$w"
             wasm-validate --disable-saturating-float-to-int --disable-sign-extension --disable-simd --disable-multi-value --disable-bulk-memory --disable-reference-types "$w"
           done
