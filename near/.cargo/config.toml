@@ -3,7 +3,7 @@
 # On Windows hosts without a system-wide Windows SDK installation, use `near/scripts/with-win-msvc-env.ps1`.
 
 [target.wasm32-unknown-unknown]
-rustflags = ["-C", "target-feature=-reference-types,-multivalue"]
+rustflags = ["-C", "target-cpu=mvp", "-C", "target-feature=-reference-types,-multivalue,-bulk-memory,-sign-ext,-mutable-globals,-nontrapping-fptoint"]
 
 [alias]
 check-wasm = "check --workspace --exclude sandbox-tests --target wasm32-unknown-unknown"

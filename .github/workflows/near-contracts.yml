@@ -45,6 +45,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
+      - name: Install Binaryen (wasm-opt) for MVP WASM lowering
+        run: sudo apt-get update && sudo apt-get install -y binaryen
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "near -> target"
@@ -61,6 +63,9 @@ jobs:
           cargo build -p snapfall-core --target wasm32-unknown-unknown --release --features test-fail-callback
           cp target/wasm32-unknown-unknown/release/snapfall_core.wasm target/wasm32-unknown-unknown/release/snapfall_core_fail_cb.wasm
           cp artifacts/production/snapfall_core.wasm target/wasm32-unknown-unknown/release/snapfall_core.wasm
+          for w in target/wasm32-unknown-unknown/release/*.wasm artifacts/production/*.wasm; do
+            wasm-opt -Oz --mvp-features --enable-mutable-globals "$w" -o "$w"
+          done
       - name: Run near-workspaces Sandbox integration tests (10 tests)
         run: cargo test -p sandbox-tests -- --nocapture --test-threads=1
 
