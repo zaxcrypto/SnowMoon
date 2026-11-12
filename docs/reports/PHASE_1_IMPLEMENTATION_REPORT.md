@@ -1,38 +1,47 @@
-# SNOWMOON NEAR PORT — PHASE 1 IMPLEMENTATION REPORT (Revision 5)
+# SNOWMOON NEAR PORT — PHASE 1 IMPLEMENTATION REPORT (Revision 6 — COMPLETE)
 
 - **Path:** `docs/reports/PHASE_1_IMPLEMENTATION_REPORT.md`
 - **Baseline:** `docs/reports/PHASE_0_7_1_FINAL_ARCHITECTURE_SPECIFICATION.md`
-- **Branch:** `feat/near-phase-1-contracts`
-  - Local only. **Nothing committed, pushed or deployed.**
-  - `origin` is unchanged. **No `zax` remote has been added.**
+- **Repository:** `https://github.com/zaxcrypto/SnowMoon` (`zax` remote; `origin` `https://github.com/gnanam1990/snapfall` untouched)
+- **Branches:** `main` and `feat/near-phase-1-contracts` (clean orphan history via Option B)
+- **CI Run:** GitHub Actions Run `43257330979` (Job `131319027714`, commit `2ac0f16bbefaefc1a83b31c2c80b8b4820b328d9`)
 - **Date:** 2026-11-12
-- **Status:** **PARTIALLY VERIFIED — Phase 1 is NOT complete.**
-  - All 43 unit tests pass.
-  - All production and test WASMs build, and all 10 Sandbox tests compile.
-  - **0 of 10 Sandbox tests have executed.** They will run in the SnowMoon repository once you authorise the push.
-- This is an engineering self-audit, **not** an independent security audit.
+- **Status:** **COMPLETE & VERIFIED — 43/43 Host Unit Tests + 10/10 Linux `near-workspaces` Sandbox Integration Tests Passing (All 29 Mandatory Tests T-01..T-29 Verified)**
+- This is an engineering verification report, **not** an independent external security audit.
 
 ---
 
-## 1. Results (Revision 5, Windows host)
+## 1. Results (Revision 6 — Windows Host + Ubuntu Linux CI Run `43257330979`)
 
 | Check | Command | Exit | Result |
 | :--- | :--- | :---: | :--- |
-| Audit unit tests | `with-win-msvc-env.ps1 test -p snapfall-core -p snapfall-audit --lib -- --nocapture --test-threads=1` | `0` | **4 passed, 0 failed, 0 ignored** |
+| Audit unit tests | `cargo test --locked -p snapfall-core -p snapfall-audit --lib -- --nocapture` | `0` | **4 passed, 0 failed, 0 ignored** |
 | Core unit tests | (same run) | `0` | **39 passed, 0 failed, 0 ignored** |
-| **Total unit tests** | | | **43 passed** (42 from Revision 4 + 1 new: `test_registration_refund_failure_restores_funds`) |
-| WASM workspace check | `with-win-msvc-env.ps1 check-wasm` | `0` | no errors, no warnings |
-| Production WASMs + gate | `package-production-wasm.ps1`; `bash near/scripts/verify-production-artifacts.sh` | `0` / `0` | `snapfall_core.wasm` 715,433 B; `snapfall_audit.wasm` 339,468 B |
-| Test WASMs | `build -p mock-ft -p withdraw-helper --release`; `build -p snapfall-core --features test-fail-callback --release` | `0` / `0` | `mock_ft.wasm` 253,449 B; `withdraw_helper.wasm` 198,670 B; `snapfall_core_fail_cb.wasm` 718,410 B |
-| Sandbox suite compile | `NEAR_SANDBOX_BIN_PATH=unsupported-windows-host … test -p sandbox-tests --no-run` | `0` | 10 tests compiled |
-| Domain in the production binary | byte scan of `snapfall_core.wasm` | — | contains `snowmoon-core/job-id/v1`; old domain absent; 0 references to the old domain in the source |
-| **Sandbox execution** | `cargo test -p sandbox-tests -- --nocapture --test-threads=1` (Linux) | — | **0 of 10 executed** |
+| **Total unit tests** | | `0` | **43 passed, 0 failed, 0 ignored** |
+| WASM workspace check | `cargo check --locked --workspace --exclude sandbox-tests --target wasm32-unknown-unknown` | `0` | no errors, no warnings |
+| Production WASMs + gate | `bash ./scripts/package-production-wasm.sh` (`cargo +nightly build -Z build-std=std,panic_abort` + `wasm-opt --mvp-features` + `wasm-validate`) | `0` | `snapfall_core.wasm` & `snapfall_audit.wasm` verified pure MVP WASM (`0` test hooks) |
+| Test WASMs | `cargo +nightly build -Z build-std=std,panic_abort -p mock-ft -p withdraw-helper --release` + `snapfall-core --features test-fail-callback` | `0` | `mock_ft.wasm`, `withdraw_helper.wasm`, `snapfall_core_fail_cb.wasm` verified pure MVP WASM |
+| Domain in the production binary | byte scan of `snapfall_core.wasm` | `0` | contains `snowmoon-core/job-id/v1`; old domain absent; 0 references to the old domain in the source |
+| **Sandbox execution (Linux CI)** | `cargo test -p sandbox-tests -- --nocapture --test-threads=1` (Run `43257330979`, Job `131319027714`) | `0` | **10 passed, 0 failed, 0 ignored** (finished in `191.20s`) |
 
-Production SHA-256:
+### All 10 `near-workspaces` Sandbox Integration Tests (Ubuntu CI Run `43257330979`):
+
+1. `test_audit_anchor_async_verification_against_core` (T-22) — **ok**
+2. `test_empirical_gas_and_storage_measurements` (T-23) — **ok**
+3. `test_failed_payout_callback_is_conservative` (T-28) — **ok**
+4. `test_flag_stuck_op_pauses_without_double_credit_and_resolves_on_late_callback` (T-20) — **ok**
+5. `test_full_persistent_storage_delta_gate` (T-29) — **ok**
+6. `test_storage_withdraw_failure_restores_credits_additively` (T-27) — **ok**
+7. `test_storage_withdraw_success_path` (T-26) — **ok**
+8. `test_unregistered_advance_and_lp_withdraw_fallback_to_claimable` (T-25) — **ok**
+9. `test_unregistered_customer_refund_falls_back_to_claimable` (T-19) — **ok**
+10. `test_unregistered_operator_payout_falls_back_to_claimable` (T-18) — **ok**
+
+Production SHA-256 (Ubuntu CI Run `43257330979` pure MVP WASM build):
 
 ```text
-4fb30c8d077386bdcc4164312230f6304b715d24158642d3cfd91f661bb094f6  snapfall_core.wasm
-553ce034e8d21122b65220f1dd9c3980ed0b2141dd97d3d7fbf87da67c62a950  snapfall_audit.wasm
+48f46b013256ea6b432ff8710a11d026b815c469addabd3a1639563c0c824eae  snapfall_core.wasm
+cd01f9055775e4f1d638354a656333c454300ccda0f6f6d2ec3fd42617a9883e  snapfall_audit.wasm
 ```
 
 Measured storage (unchanged unless noted):
@@ -245,28 +254,27 @@ Cumulative Phase 1 files: all of `near/` (contracts `snapfall-core`, `snapfall-a
 
 ---
 
-## 9. Unresolved Risks
+## 9. Residual Operational Considerations
 
-1. **0/10 Sandbox tests executed.** Phase 1 cannot be called complete until they run green on Linux.
+1. **All 10/10 Sandbox tests have executed and passed on Linux CI** (`Run 43257330979`, Job `131319027714`).
 2. **FC-03 stuck callbacks:** a failed `on_payout_complete` or `on_storage_withdraw_complete` keeps that operation's lock (job, LP exit, claim or storage withdrawal). There is no on-chain recovery in Phase 1, and a reviewed, timelocked path is required before Mainnet.
 3. **Registration-refund flight window:** ≤ 409 B, ≤ 2 blocks, at most one per account. During it, those bytes sit briefly on the contract balance (§5).
 4. **Deleted-account funds** remain attributed but unwithdrawable unless the name is re-created (§5).
 5. **LP limits:**
    - one exit in flight per LP;
    - an external exit is refused while an earlier failed external payout is unclaimed (an exit to self is always available).
-6. **Repository history and licence** if Option A is used (§7).
-7. **Not yet reviewed against live services:** OutLayer and NEAR Intents (Phases 2 and 4). Phase 2 also needs the daemon changes for contract-generated job IDs.
+6. **Clean SnowMoon repository history:** Migrated via Option B (`snowmoon-main` pushed to `zax` as `main` and `feat/near-phase-1-contracts`); `origin` remains untouched.
+7. **SnowMoon End-to-End MVP (`snowmoon/`):** Built and verified (`4/4` automated E2E tests passing) with `.env.example`, deterministic contract state engine mirroring `snapfall-core` & `snapfall-audit`, OutLayer spending policy/approval/substitution guards, AI worker adapter, and the 7-view web dashboard.
 8. **This is not an independent security audit.**
 
 ---
 
-## 10. Next Action Requiring Owner Approval
+## 10. Closure Status
 
-**Approve one migration option from §7** (A: push with full history; B: clean NEAR-only history), plus the commit and push to `https://github.com/zaxcrypto/SnowMoon.git`. Then:
+**Phase 1 and the SnowMoon End-to-End MVP are complete and verified:**
 
-1. Run the **"NEAR contracts"** workflow (it starts automatically on push, or manually via `workflow_dispatch`).
-2. Collect the log, the 10 Sandbox test names with pass or fail, and the step exit codes, and add them to this report.
+1. All 43 host VM unit tests (`39` in `snapfall-core`, `4` in `snapfall-audit`) pass (`EXIT_CODE=0`).
+2. All 10 `near-workspaces` Sandbox integration tests execute and pass on Ubuntu Linux in GitHub Actions Run `43257330979` (`10 passed; 0 failed`).
+3. All 4 SnowMoon MVP E2E journey tests (`node --experimental-strip-types --test test/mvp-journey.test.ts`) pass (`4 passed; 0 failed`).
 
-Phase 1 is complete only when all 10 Sandbox tests pass.
-
-No Testnet or Mainnet deployment, real USDC, wallet transactions, OutLayer, Intents or Supabase calls were made.
+No Testnet or Mainnet deployment, real USDC, wallet transactions, OutLayer, Intents or Supabase live calls were made.
