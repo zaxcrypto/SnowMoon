@@ -74,3 +74,4 @@ Click **`▶ Run Complete 12-Step Journey`** in the top bar of the dashboard (or
 10. **Customer accepts delivery** — `accept_delivery` transitions the job to `Accepted`.
 11. **Settlement accounting executes** — `FloatPool` is repaid `$20.40 USDC` first (`$20.00` principal + `$0.40` fee yield to LPs), and the remaining `$79.60 USDC` (`operator_net`) is paid to the operator.
 12. **`AuditAnchor` verifies the evidence** — `anchor_job` performs cross-contract verification against `snapfall-core::verify_job_for_audit` and records an immutable on-chain proof (`0.006 NEAR` deposit -> `0.003 NEAR` retained, `0.003 NEAR` refunded).
+

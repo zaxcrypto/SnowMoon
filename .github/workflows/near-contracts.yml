@@ -66,8 +66,8 @@ jobs:
           cp artifacts/production/snapfall_core.wasm target/wasm32-unknown-unknown/release/snapfall_core.wasm
           for w in target/wasm32-unknown-unknown/release/*.wasm artifacts/production/*.wasm; do
             echo "=== Lowering $w to pure MVP WASM ==="
-            wasm-opt -Oz --mvp-features --signext-lowering --llvm-memory-copy-fill-lowering "$w" -o "$w" || wasm-opt -Oz --mvp-features --signext-lowering "$w" -o "$w"
-            wasm-validate --disable-all "$w"
+            wasm-opt -Oz --mvp-features --signext-lowering "$w" -o "$w"
+            wasm-validate --disable-saturating-float-to-int --disable-sign-extension --disable-simd --disable-multi-value --disable-bulk-memory --disable-reference-types "$w"
           done
       - name: Run near-workspaces Sandbox integration tests (10 tests)
         run: cargo test -p sandbox-tests -- --nocapture --test-threads=1

@@ -193,7 +193,7 @@ export function createSnowMoonApp(customConfig?: SnowMoonConfig): SnowMoonApp {
         );
         const taskDescription = String(
           body.taskDescription ||
-            "Execute autonomous verification of NEAR protocol liquidity metrics, query market depth feeds under OutLayer spending policy, and generate a cryptographic deliverable hash for AuditAnchor."
+          "Execute autonomous verification of NEAR protocol liquidity metrics, query market depth feeds under OutLayer spending policy, and generate a cryptographic deliverable hash for AuditAnchor."
         );
         const customerPaymentUsdc = BigInt(String(body.customerPaymentUsdc || "100000000")); // default $100.00 USDC
         const maxOperatingBudgetUsdc = BigInt(
@@ -431,7 +431,7 @@ export function createSnowMoonApp(customConfig?: SnowMoonConfig): SnowMoonApp {
           ),
           taskDescription: String(
             body.taskDescription ||
-              "Execute on-chain storage & FloatPool invariants analysis, pull institutional orderbook telemetry within budget, and anchor a cryptographic proof on AuditAnchor."
+            "Execute on-chain storage & FloatPool invariants analysis, pull institutional orderbook telemetry within budget, and anchor a cryptographic proof on AuditAnchor."
           ),
           customerPaymentUsdc: 100_000_000n, // $100.00 USDC
           maxOperatingBudgetUsdc: 25_000_000n, // $25.00 USDC
@@ -572,10 +572,10 @@ export function createSnowMoonApp(customConfig?: SnowMoonConfig): SnowMoonApp {
           ext === ".html"
             ? "text/html; charset=utf-8"
             : ext === ".js"
-            ? "application/javascript; charset=utf-8"
-            : ext === ".css"
-            ? "text/css; charset=utf-8"
-            : "application/octet-stream";
+              ? "application/javascript; charset=utf-8"
+              : ext === ".css"
+                ? "text/css; charset=utf-8"
+                : "application/octet-stream";
         res.writeHead(200, { "Content-Type": contentType });
         res.end(fs.readFileSync(filePath));
         return;
@@ -603,3 +603,4 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename
     );
   });
 }
+
