@@ -42,16 +42,15 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.86.0
           targets: wasm32-unknown-unknown
       - name: Install Binaryen (wasm-opt) and wabt (wasm-validate) for MVP WASM verification
         run: sudo apt-get update && sudo apt-get install -y binaryen wabt
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "near -> target"
-          key: rust-1.86.0-mvp
+          key: rust-stable-mvp
       - name: Check WASM workspace compilation
         run: cargo check --locked --workspace --exclude sandbox-tests --target wasm32-unknown-unknown
       - name: Run host VM unit tests (snapfall-core + snapfall-audit)
@@ -66,7 +65,8 @@ jobs:
           cp target/wasm32-unknown-unknown/release/snapfall_core.wasm target/wasm32-unknown-unknown/release/snapfall_core_fail_cb.wasm
           cp artifacts/production/snapfall_core.wasm target/wasm32-unknown-unknown/release/snapfall_core.wasm
           for w in target/wasm32-unknown-unknown/release/*.wasm artifacts/production/*.wasm; do
-            wasm-opt -Oz --mvp-features --signext-lowering "$w" -o "$w"
+            echo "=== Lowering $w to pure MVP WASM ==="
+            wasm-opt -Oz --mvp-features --signext-lowering --llvm-memory-copy-fill-lowering "$w" -o "$w" || wasm-opt -Oz --mvp-features --signext-lowering "$w" -o "$w"
             wasm-validate --disable-all "$w"
           done
       - name: Run near-workspaces Sandbox integration tests (10 tests)
