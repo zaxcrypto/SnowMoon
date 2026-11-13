@@ -43,8 +43,10 @@
       --accent-bg: #1b1a2e;
       --accent-border: #35335c;
       --on-accent: #14132a;
-      --radius: 10px;
-      --radius-sm: 7px;
+      --radius: 22px;
+      --radius-md: 16px;
+      --radius-sm: 14px;
+      --radius-pill: 9999px;
       --shadow: none;
       --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -95,35 +97,41 @@
     .num, .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
     .mono { font-size: 12px; }
 
-    /* Shell */
-    .app {
-      display: grid;
-      grid-template-columns: 224px 1fr;
-      min-height: 100vh;
-    }
-
-    /* Left Sidebar */
-    .sidebar {
-      border-right: 1px solid var(--border);
-      background: var(--bg);
-      padding: 20px 14px;
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
+    /* Shell (world.xyz curved layout, existing SnowMoon colours) */
+    .topbar {
       position: sticky;
       top: 0;
-      height: 100vh;
+      z-index: 40;
+      background: var(--bg);
+      border-bottom: 1px solid var(--border);
+    }
+    .topbar-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 12px 28px;
+      max-width: 1520px;
+      margin: 0 auto;
+    }
+    .topbar-left {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      flex: 1;
+      min-width: 0;
     }
     .brand {
       display: flex;
       align-items: center;
       gap: 10px;
-      padding: 4px 10px 18px;
+      flex: none;
+      cursor: pointer;
     }
     .brand-mark {
-      width: 24px;
-      height: 24px;
-      border-radius: 6px;
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
       border: 1px solid var(--accent-border);
       background: var(--accent-bg);
       color: var(--accent);
@@ -136,52 +144,174 @@
       flex: none;
     }
     .brand-name {
-      font-weight: 650;
-      letter-spacing: -0.01em;
-      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      font-size: 16px;
       color: var(--text);
+    }
+    .search-pill {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-pill);
+      padding: 0 16px;
+      height: 40px;
+      max-width: 360px;
+      width: 100%;
+    }
+    .search-pill:focus-within {
+      border-color: var(--accent);
+    }
+    .search-pill svg {
+      width: 15px;
+      height: 15px;
+      stroke: var(--muted);
+      fill: none;
+      stroke-width: 2;
+      flex: none;
+    }
+    .search-pill input {
+      border: none;
+      background: transparent;
+      padding: 0;
+      height: 100%;
+      font-size: 13.5px;
+      color: var(--text);
+      border-radius: 0;
+    }
+    .search-pill input:focus {
+      outline: none;
+    }
+    .topbar-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .subbar {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      padding: 8px 28px 12px;
+      max-width: 1520px;
+      margin: 0 auto;
+      overflow-x: auto;
+    }
+    .subbar-group {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex: none;
+    }
+    .subbar-divider {
+      width: 1px;
+      height: 16px;
+      background: var(--border);
+      flex: none;
+    }
+    .subbar-tab {
+      background: transparent;
+      border: none;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      padding: 4px 2px;
+      white-space: nowrap;
+      transition: color 0.12s;
+    }
+    .subbar-tab:hover { color: var(--text); }
+    .subbar-tab.active {
+      color: var(--text);
+      font-weight: 650;
+    }
+    .subbar-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 12.5px;
+      color: var(--text-2);
+      white-space: nowrap;
+    }
+
+    .app {
+      display: grid;
+      grid-template-columns: 236px 1fr;
+      max-width: 1520px;
+      margin: 0 auto;
+      min-height: calc(100vh - 105px);
+    }
+
+    /* Left Sidebar (airy curved pill list like world.xyz) */
+    .sidebar {
+      background: var(--bg);
+      padding: 24px 16px 24px 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      position: sticky;
+      top: 106px;
+      height: calc(100vh - 106px);
     }
     .sidebar nav {
       display: flex;
       flex-direction: column;
-      gap: 2px;
+      gap: 6px;
     }
     .nav-link {
       display: flex;
       align-items: center;
       justify-content: space-between;
       width: 100%;
-      padding: 8px 10px;
-      border-radius: var(--radius-sm);
-      border: none;
+      padding: 10px 14px;
+      border-radius: var(--radius-pill);
+      border: 1px solid transparent;
       background: transparent;
       color: var(--muted);
       font-size: 13.5px;
       font-weight: 500;
       text-align: left;
       cursor: pointer;
-      transition: background 0.12s, color 0.12s;
+      transition: background 0.12s, color 0.12s, border-color 0.12s;
+    }
+    .nav-left {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+    .nav-ico {
+      width: 16px;
+      height: 16px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 1.8;
+      flex: none;
+      opacity: 0.85;
     }
     .nav-link:hover {
       background: var(--hover);
       color: var(--text);
     }
     .nav-link.active {
-      background: var(--panel-2);
+      background: var(--panel);
+      border-color: var(--border-2);
       color: var(--text);
       font-weight: 600;
     }
     .nav-count {
       font-family: var(--mono);
-      font-size: 11px;
+      font-size: 11.5px;
       color: var(--muted-2);
-      padding: 1px 6px;
-      border-radius: 999px;
-      background: var(--panel-3);
+      padding: 1px 7px;
+      border-radius: var(--radius-pill);
+      background: var(--panel-2);
     }
     .sidebar-foot {
       margin-top: auto;
-      padding: 12px 10px 4px;
+      padding: 14px 12px 4px;
       border-top: 1px solid var(--border);
       font-size: 12px;
       color: var(--muted);
@@ -208,9 +338,9 @@
     }
     .sidebar-net-dot.warn { background: var(--warn); }
     .theme-toggle {
-      width: 30px;
-      height: 30px;
-      border-radius: var(--radius-sm);
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
       border: 1px solid var(--border);
       background: var(--panel);
       color: var(--muted);
@@ -219,6 +349,7 @@
       justify-content: center;
       cursor: pointer;
       padding: 0;
+      flex: none;
     }
     .theme-toggle:hover {
       color: var(--text);
@@ -236,30 +367,28 @@
     /* Main Content */
     .main-wrap {
       min-width: 0;
-      padding: 26px 32px 56px;
-      max-width: 1260px;
+      padding: 24px 32px 64px 20px;
       width: 100%;
     }
     .page-header {
       display: flex;
       flex-wrap: wrap;
       justify-content: space-between;
-      align-items: flex-start;
+      align-items: center;
       gap: 16px;
-      padding-bottom: 18px;
-      margin-bottom: 22px;
-      border-bottom: 1px solid var(--border);
+      padding-bottom: 16px;
+      margin-bottom: 20px;
     }
     .page-header h1 {
-      font-size: 20px;
-      font-weight: 650;
-      letter-spacing: -0.015em;
+      font-size: 28px;
+      font-weight: 700;
+      letter-spacing: -0.025em;
       color: var(--text);
     }
     .page-header-sub {
-      font-size: 13px;
+      font-size: 13.5px;
       color: var(--muted);
-      margin-top: 3px;
+      margin-top: 4px;
     }
     .page-header-aside {
       display: flex;
@@ -274,22 +403,22 @@
     /* Cards & Grids */
     .grid-4 {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-      gap: 14px;
-      margin-bottom: 20px;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 18px;
+      margin-bottom: 22px;
     }
     .grid-2 {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
-      gap: 16px;
-      margin-bottom: 20px;
+      gap: 18px;
+      margin-bottom: 22px;
     }
     .card {
       background: var(--panel);
       border: 1px solid var(--border);
       border-radius: var(--radius);
-      padding: 18px 20px;
-      margin-bottom: 16px;
+      padding: 22px 24px;
+      margin-bottom: 18px;
     }
     .grid-4 .card, .grid-2 .card { margin-bottom: 0; }
     .card-head {
@@ -357,12 +486,12 @@
       align-items: center;
       justify-content: center;
       gap: 6px;
-      padding: 7px 13px;
-      border-radius: var(--radius-sm);
+      padding: 9px 18px;
+      border-radius: var(--radius-pill);
       border: 1px solid var(--border-2);
       background: var(--panel-2);
       color: var(--text);
-      font-size: 12.5px;
+      font-size: 13px;
       font-weight: 550;
       cursor: pointer;
       white-space: nowrap;
@@ -379,14 +508,14 @@
     .btn-primary:hover { opacity: 0.92; background: var(--accent); border-color: var(--accent); }
     .btn-pos { background: var(--pos-bg); border-color: var(--pos-border); color: var(--pos); }
     .btn-neg { background: var(--neg-bg); border-color: var(--neg-border); color: var(--neg); }
-    .btn-sm { padding: 4px 9px; font-size: 11.5px; }
+    .btn-sm { padding: 6px 13px; font-size: 12px; }
 
     input, select, textarea {
       background: var(--well);
       color: var(--text);
       border: 1px solid var(--border-2);
       border-radius: var(--radius-sm);
-      padding: 8px 11px;
+      padding: 10px 14px;
       font-size: 13px;
       font-family: inherit;
       width: 100%;
@@ -437,8 +566,8 @@
     .flow-node {
       background: var(--bg-2);
       border: 1px solid var(--border);
-      border-radius: var(--radius-sm);
-      padding: 12px 14px;
+      border-radius: var(--radius-md);
+      padding: 14px 16px;
     }
     .flow-node .flow-step { font-size: 11px; color: var(--muted-2); font-family: var(--mono); }
     .flow-node .flow-val { font-size: 16px; font-weight: 650; font-family: var(--mono); margin-top: 4px; }
@@ -448,8 +577,8 @@
     pre.code-box {
       background: var(--well);
       border: 1px solid var(--border);
-      border-radius: var(--radius-sm);
-      padding: 12px;
+      border-radius: var(--radius-md);
+      padding: 14px;
       font-family: var(--mono);
       font-size: 11.5px;
       color: var(--text-2);
@@ -460,13 +589,13 @@
       margin-top: 10px;
     }
     .banner-note {
-      padding: 10px 14px;
-      border-radius: var(--radius-sm);
+      padding: 12px 18px;
+      border-radius: var(--radius-md);
       border: 1px solid var(--border);
       background: var(--bg-2);
       font-size: 12.5px;
       color: var(--text-2);
-      margin-bottom: 16px;
+      margin-bottom: 18px;
       display: flex;
       flex-wrap: wrap;
       justify-content: space-between;
@@ -483,8 +612,8 @@
       background: var(--panel-3);
       border: 1px solid var(--border-2);
       color: var(--text);
-      padding: 10px 16px;
-      border-radius: var(--radius-sm);
+      padding: 12px 18px;
+      border-radius: var(--radius-pill);
       font-size: 12.5px;
       display: none;
       z-index: 1000;
@@ -492,15 +621,18 @@
     }
 
     @media (max-width: 900px) {
+      .topbar-inner { padding: 12px 16px; flex-wrap: wrap; }
+      .search-pill { max-width: 100%; order: 3; flex-basis: 100%; }
+      .subbar { padding: 8px 16px 10px; }
       .app { grid-template-columns: 1fr; }
       .sidebar {
         position: static;
         height: auto;
         border-right: none;
         border-bottom: 1px solid var(--border);
-        padding: 12px 14px;
+        padding: 12px 16px;
       }
-      .sidebar nav { flex-direction: row; overflow-x: auto; gap: 4px; }
+      .sidebar nav { flex-direction: row; overflow-x: auto; gap: 6px; }
       .nav-link { width: auto; white-space: nowrap; }
       .sidebar-foot { display: none; }
       .main-wrap { padding: 18px 16px 40px; }
@@ -510,49 +642,96 @@
   </style>
 </head>
 <body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="topbar-left">
+        <div class="brand" onclick="switchView('overview')">
+          <span class="brand-mark">SM</span>
+          <div class="brand-name">SnowMoon</div>
+        </div>
+        <label class="search-pill" aria-label="Filter dashboard records">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path stroke-linecap="round" d="M20 20l-3.5-3.5"/></svg>
+          <input id="global-search" type="search" placeholder="Search jobs, workers, accounts..." oninput="filterDashboardRows(this.value)" />
+        </label>
+      </div>
+      <div class="topbar-right">
+        <span class="badge" id="hdr-mode-badge">Mode: loading...</span>
+        <span class="badge" id="hdr-wallet-badge">Wallet: Read-only</span>
+        <button class="btn btn-sm" onclick="refreshAll()">Refresh</button>
+        <button class="btn btn-primary btn-sm" onclick="switchView('settings')">Wallet / Auth</button>
+        <button type="button" class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle colour theme" title="Toggle light/dark theme">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path stroke-linecap="round" d="M12 2.6v2.4M12 19v2.4M2.6 12h2.4M19 12h2.4M5.3 5.3l1.7 1.7M17 17l1.7 1.7M18.7 5.3L17 7M7 17l-1.7 1.7"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="subbar" aria-label="Quick sections">
+      <div class="subbar-group">
+        <span class="subbar-status"><span class="sidebar-net-dot" id="sidebar-net-dot" aria-hidden="true"></span><span id="sidebar-net-label">Connecting...</span></span>
+      </div>
+      <div class="subbar-divider"></div>
+      <div class="subbar-group">
+        <button class="subbar-tab active" data-subview="overview" onclick="switchView('overview')">Overview</button>
+        <button class="subbar-tab" data-subview="jobs" onclick="switchView('jobs')">Jobs</button>
+        <button class="subbar-tab" data-subview="workforce" onclick="switchView('workforce')">Workforce</button>
+        <button class="subbar-tab" data-subview="approvals" onclick="switchView('approvals')">Approvals</button>
+        <button class="subbar-tab" data-subview="float" onclick="switchView('float')">Float</button>
+        <button class="subbar-tab" data-subview="audit" onclick="switchView('audit')">Audit</button>
+        <button class="subbar-tab" data-subview="settings" onclick="switchView('settings')">Settings</button>
+      </div>
+    </div>
+  </header>
+
   <div class="app">
     <aside class="sidebar">
-      <div class="brand">
-        <span class="brand-mark">SM</span>
-        <div class="brand-name">SnowMoon</div>
-      </div>
       <nav aria-label="Primary navigation">
         <button class="nav-link active" data-view="overview" onclick="switchView('overview')">
-          <span>Overview</span>
+          <span class="nav-left">
+            <svg class="nav-ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></svg>
+            <span>Overview</span>
+          </span>
         </button>
         <button class="nav-link" data-view="jobs" onclick="switchView('jobs')">
-          <span>Jobs</span>
+          <span class="nav-left">
+            <svg class="nav-ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="7" width="18" height="13" rx="3"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            <span>Jobs</span>
+          </span>
           <span class="nav-count" id="nav-jobs-count">0</span>
         </button>
         <button class="nav-link" data-view="workforce" onclick="switchView('workforce')">
-          <span>Workforce</span>
+          <span class="nav-left">
+            <svg class="nav-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M3 19a6 6 0 0 1 12 0"/><circle cx="17" cy="9" r="2.5"/><path d="M16 19a4.5 4.5 0 0 1 5-4.4"/></svg>
+            <span>Workforce</span>
+          </span>
           <span class="nav-count" id="nav-workers-count">0</span>
         </button>
         <button class="nav-link" data-view="approvals" onclick="switchView('approvals')">
-          <span>Approvals</span>
+          <span class="nav-left">
+            <svg class="nav-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path stroke-linecap="round" stroke-linejoin="round" d="M8.5 12.5l2.3 2.3 4.7-5"/></svg>
+            <span>Approvals</span>
+          </span>
           <span class="nav-count" id="nav-approvals-count">0</span>
         </button>
         <button class="nav-link" data-view="float" onclick="switchView('float')">
-          <span>Float</span>
+          <span class="nav-left">
+            <svg class="nav-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M16.5 7.5a4.5 4.5 0 0 0-4.5-2.5c-2.5 0-4 1.2-4 3s1.5 2.7 4 3.2 4.5 1.3 4.5 3.3-1.8 3.2-4.5 3.2a4.8 4.8 0 0 1-4.6-2.5"/></svg>
+            <span>Float</span>
+          </span>
         </button>
         <button class="nav-link" data-view="audit" onclick="switchView('audit')">
-          <span>Audit</span>
+          <span class="nav-left">
+            <svg class="nav-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3v6c0 4.5-3 7.8-7 9-4-1.2-7-4.5-7-9V6l7-3z"/></svg>
+            <span>Audit</span>
+          </span>
         </button>
         <button class="nav-link" data-view="settings" onclick="switchView('settings')">
-          <span>Settings</span>
+          <span class="nav-left">
+            <svg class="nav-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.2a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.2a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3h.1a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.2a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8v.1a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.2a1.6 1.6 0 0 0-1.5 1z"/></svg>
+            <span>Settings</span>
+          </span>
         </button>
       </nav>
       <div class="sidebar-foot">
-        <div class="sidebar-foot-row">
-          <div class="sidebar-net">
-            <span class="sidebar-net-dot" id="sidebar-net-dot" aria-hidden="true"></span>
-            <span id="sidebar-net-label">Connecting...</span>
-          </div>
-          <button type="button" class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle colour theme" title="Toggle light/dark theme">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path stroke-linecap="round" d="M12 2.6v2.4M12 19v2.4M2.6 12h2.4M19 12h2.4M5.3 5.3l1.7 1.7M17 17l1.7 1.7M18.7 5.3L17 7M7 17l-1.7 1.7"/></svg>
-          </button>
-        </div>
-        <div style="margin-top: 6px; font-size: 11px; color: var(--muted-2);">
+        <div style="font-size: 11px; color: var(--muted-2);">
           NEAR Mainnet Escrow &amp; OutLayer TEE
         </div>
       </div>
@@ -563,12 +742,6 @@
         <div>
           <h1 id="page-title">Overview</h1>
           <p class="page-header-sub" id="page-sub">Live NEAR Core Vault, FloatPool, Workforce, and OutLayer TEE ledger.</p>
-        </div>
-        <div class="page-header-aside">
-          <span class="badge" id="hdr-mode-badge">Mode: loading...</span>
-          <span class="badge" id="hdr-wallet-badge">Wallet: Read-only</span>
-          <button class="btn btn-sm" onclick="refreshAll()">Refresh</button>
-          <button class="btn btn-primary btn-sm" onclick="switchView('settings')">Wallet / Auth</button>
         </div>
       </div>
 
@@ -1039,12 +1212,23 @@
       document.querySelectorAll(".nav-link").forEach((el) => {
         el.classList.toggle("active", el.dataset.view === viewName);
       });
+      document.querySelectorAll(".subbar-tab").forEach((el) => {
+        el.classList.toggle("active", el.dataset.subview === viewName);
+      });
       document.querySelectorAll(".view-section").forEach((sec) => {
         sec.classList.toggle("active", sec.id === `view-${viewName}`);
       });
       const meta = VIEW_META[viewName] || VIEW_META.overview;
       document.getElementById("page-title").textContent = meta.title;
       document.getElementById("page-sub").textContent = meta.sub;
+    }
+
+    function filterDashboardRows(query) {
+      const q = String(query || "").trim().toLowerCase();
+      document.querySelectorAll("tbody tr").forEach((tr) => {
+        if (tr.querySelector(".empty-row")) return;
+        tr.style.display = !q || tr.textContent.toLowerCase().includes(q) ? "" : "none";
+      });
     }
 
     function showToast(msg) {
