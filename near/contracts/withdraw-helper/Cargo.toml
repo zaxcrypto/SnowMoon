@@ -1,0 +1,13 @@
+[package]
+name = "withdraw-helper"
+version = "0.1.0"
+edition = "2021"
+description = "TEST-ONLY helper for Sandbox T-27: triggers an in-flight storage_withdraw failure. Never deploy outside Sandbox."
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+near-sdk = { workspace = true }
+

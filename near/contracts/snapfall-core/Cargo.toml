@@ -1,0 +1,18 @@
+[package]
+name = "snapfall-core"
+version = "0.1.0"
+edition = "2021"
+description = "Snapfall NEAR core contract: JobVault + FloatPool + AsyncOps + StorageCredits + Governance"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+test-fail-callback = []
+
+[dependencies]
+near-sdk = { workspace = true }
+
+[dev-dependencies]
+near-sdk = { workspace = true, features = ["unit-testing"] }

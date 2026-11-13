@@ -43,3 +43,11 @@ daemon/snapfalld
 # local editor/preview tooling; the port and port choice are machine-specific
 .claude/launch.json
 .vercel/
+
+# near workspace build artifacts & local toolchain caches
+near/target/
+near/artifacts/
+near/.cargo/config.local.toml
+winsdk_*/
+nasm*/
+*.nupkg

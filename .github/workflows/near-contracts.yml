@@ -1,0 +1,87 @@
+# SnowMoon NEAR contracts — independent workflow.
+# Runs ONLY the NEAR contract build/test pipeline. It does not trigger (and is not triggered with) the
+# Foundry, daemon, sidecar or dashboard jobs in ci.yml.
+#
+# Triggers:
+#   - manual:  Actions tab -> "NEAR contracts" -> "Run workflow" (choose the branch), or
+#              `gh workflow run near-contracts.yml --ref feat/near-phase-1-contracts`
+#   - push / pull_request that touch near/** or this workflow file.
+# No secrets, no deployment, no Testnet/Mainnet access: everything runs against a local NEAR Sandbox.
+name: NEAR contracts
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - 'feat/near-*'
+    paths:
+      - 'near/**'
+      - '.github/workflows/near-contracts.yml'
+  pull_request:
+    paths:
+      - 'near/**'
+      - '.github/workflows/near-contracts.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: near-contracts-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  near-contracts:
+    name: NEAR contracts WASM build, unit tests and Sandbox integration suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: near
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: wasm32-unknown-unknown
+          components: rust-src
+      - name: Install Binaryen (wasm-opt) and wabt (wasm-validate) for MVP WASM verification
+        run: sudo apt-get update && sudo apt-get install -y binaryen wabt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "near -> target"
+          key: rust-nightly-build-std-mvp
+      - name: Check WASM workspace compilation
+        run: cargo check --locked --workspace --exclude sandbox-tests --target wasm32-unknown-unknown
+      - name: Run host VM unit tests (snapfall-core + snapfall-audit)
+        run: cargo test --locked -p snapfall-core -p snapfall-audit --lib -- --nocapture
+      - name: Package and verify production WASM artifacts
+        run: bash ./scripts/package-production-wasm.sh
+      - name: Upload pure-MVP production WASM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: snowmoon-production-wasm
+          path: |
+            near/artifacts/production/snapfall_core.wasm
+            near/artifacts/production/snapfall_audit.wasm
+            near/artifacts/production/SHA256SUMS
+          retention-days: 30
+      - name: Build test-only WASMs for Sandbox suite
+        run: |
+          cargo +nightly build -Z build-std=std,panic_abort -p mock-ft --target wasm32-unknown-unknown --release
+          cargo +nightly build -Z build-std=std,panic_abort -p withdraw-helper --target wasm32-unknown-unknown --release
+          cargo +nightly build -Z build-std=std,panic_abort -p snapfall-core --target wasm32-unknown-unknown --release --features test-fail-callback
+          cp target/wasm32-unknown-unknown/release/snapfall_core.wasm target/wasm32-unknown-unknown/release/snapfall_core_fail_cb.wasm
+          cp artifacts/production/snapfall_core.wasm target/wasm32-unknown-unknown/release/snapfall_core.wasm
+          for w in target/wasm32-unknown-unknown/release/*.wasm artifacts/production/*.wasm; do
+            echo "=== Validating $w as pure MVP WASM ==="
+            wasm-opt -Oz --mvp-features --signext-lowering "$w" -o "$w"
+            wasm-validate --disable-saturating-float-to-int --disable-sign-extension --disable-simd --disable-multi-value --disable-bulk-memory --disable-reference-types "$w"
+          done
+      - name: Run near-workspaces Sandbox integration tests (10 tests)
+        run: cargo test -p sandbox-tests -- --nocapture --test-threads=1
+

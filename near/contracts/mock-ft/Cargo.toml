@@ -1,0 +1,12 @@
+[package]
+name = "mock-ft"
+version = "0.1.0"
+edition = "2021"
+description = "TEST-ONLY mock NEP-141 token (6 decimals) for Sandbox tests. Never deploy outside Sandbox."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+near-sdk = { workspace = true }
+
