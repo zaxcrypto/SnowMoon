@@ -1,11 +1,10 @@
 //! NEP-145-like user storage credits + separate native-NEAR withdrawal queue (POD-03A, FC-02, FC-04).
 //! Decision 4 (AUD-08): every storage-credit record is caller-funded by its `registration`, which also pays for
 //! one in-flight withdrawal (PendingNearOp + lock). Nothing in this module is Core-sponsored.
-use crate::events;
+use crate::events::{self, JsonObj};
 use crate::types::{PendingNearOp, StorageCreditEntry};
 use crate::{Contract, ContractExt, GAS_NEAR_TRANSFER_CALLBACK, TIMELOCK_DELAY_SEC};
 use near_sdk::json_types::U128;
-use near_sdk::serde_json::json;
 use near_sdk::{assert_one_yocto, env, near, require, AccountId, NearToken, Promise};
 
 /// Owner Decision 1: initial per-job storage deposit = 0.023 NEAR (2,300 B @ 1e19 yocto/B).
@@ -63,8 +62,10 @@ impl Contract {
             .expect("ERR_TOTAL_STORAGE_OVERFLOW");
         events::simple(
             "StorageRegistered",
-            json!({"account": account, "registrationYocto": registration.to_string(),
-                   "balanceYocto": balance.to_string()}),
+            JsonObj::new()
+                .acc("account", account)
+                .u128_str("registrationYocto", registration)
+                .u128_str("balanceYocto", balance),
         );
     }
 
@@ -115,7 +116,7 @@ impl Contract {
         self.storage_withdraw_lock.insert(account.clone(), near_op_id);
         events::simple(
             "StorageRegistrationRefundRequested",
-            json!({"nearOpId": near_op_id, "account": account, "amountYocto": amt.to_string()}),
+            JsonObj::new().u64_num("nearOpId", near_op_id).acc("account", account).u128_str("amountYocto", amt),
         );
         Some(
             Promise::new(account.clone())
@@ -137,8 +138,10 @@ impl Contract {
                 self.storage_credits.remove(&op.account);
                 events::simple(
                     "StorageUnregistered",
-                    json!({"nearOpId": near_op_id, "account": op.account,
-                           "registrationRefundedYocto": op.amount.to_string()}),
+                    JsonObj::new()
+                        .u64_num("nearOpId", near_op_id)
+                        .acc("account", &op.account)
+                        .u128_str("registrationRefundedYocto", op.amount),
                 );
             } else {
                 // A deposit arrived while the refund was in flight: the record must stay funded, so its
@@ -151,8 +154,10 @@ impl Contract {
                 self.total_storage_registration += reg;
                 events::simple(
                     "StorageRegistered",
-                    json!({"account": op.account, "registrationYocto": reg.to_string(),
-                           "balanceYocto": (balance - reg).to_string()}),
+                    JsonObj::new()
+                        .acc("account", &op.account)
+                        .u128_str("registrationYocto", reg)
+                        .u128_str("balanceYocto", balance - reg),
                 );
             }
         } else {
@@ -163,7 +168,10 @@ impl Contract {
             self.total_storage_registration += op.amount;
             events::simple(
                 "StorageRegistrationRefundFailed",
-                json!({"nearOpId": near_op_id, "account": op.account, "amountYocto": op.amount.to_string()}),
+                JsonObj::new()
+                    .u64_num("nearOpId", near_op_id)
+                    .acc("account", &op.account)
+                    .u128_str("amountYocto", op.amount),
             );
         }
     }
@@ -229,7 +237,7 @@ impl Contract {
         self.credit_storage(&beneficiary, amount);
         events::simple(
             "StorageDeposited",
-            json!({"account": beneficiary, "amountYocto": amount.to_string()}),
+            JsonObj::new().acc("account", &beneficiary).u128_str("amountYocto", amount),
         );
     }
 
@@ -281,7 +289,7 @@ impl Contract {
 
         events::simple(
             "StorageWithdrawRequested",
-            json!({"nearOpId": near_op_id, "account": caller, "amountYocto": amt.to_string()}),
+            JsonObj::new().u64_num("nearOpId", near_op_id).acc("account", &caller).u128_str("amountYocto", amt),
         );
 
         Promise::new(caller)
@@ -296,7 +304,7 @@ impl Contract {
     #[private]
     pub fn on_storage_withdraw_complete(&mut self, near_op_id: u64) {
         let Some(op) = self.pending_near_ops.remove(&near_op_id) else {
-            events::simple("StorageWithdrawAnomaly", json!({"nearOpId": near_op_id}));
+            events::simple("StorageWithdrawAnomaly", JsonObj::new().u64_num("nearOpId", near_op_id));
             return;
         };
 
@@ -311,7 +319,10 @@ impl Contract {
         if succeeded {
             events::simple(
                 "StorageWithdrawn",
-                json!({"nearOpId": near_op_id, "account": op.account, "amountYocto": op.amount.to_string()}),
+                JsonObj::new()
+                    .u64_num("nearOpId", near_op_id)
+                    .acc("account", &op.account)
+                    .u128_str("amountYocto", op.amount),
             );
             // Fully drained and idle -> start the tracked registration refund (full exit).
             if let Some(p) = self.start_registration_refund(&op.account) {
@@ -323,7 +334,10 @@ impl Contract {
             self.credit_storage(&op.account, op.amount);
             events::simple(
                 "StorageWithdrawFailed",
-                json!({"nearOpId": near_op_id, "account": op.account, "amountYocto": op.amount.to_string()}),
+                JsonObj::new()
+                    .u64_num("nearOpId", near_op_id)
+                    .acc("account", &op.account)
+                    .u128_str("amountYocto", op.amount),
             );
         }
     }
@@ -341,8 +355,12 @@ impl Contract {
         op.flagged_stuck = true;
         events::simple(
             "StuckNearOpFlagged",
-            json!({"nearOpId": near_op_id, "account": op.account, "amountYocto": op.amount.to_string(),
-                   "createdAtBlock": op.created_at_block, "note": note}),
+            JsonObj::new()
+                .u64_num("nearOpId", near_op_id)
+                .acc("account", &op.account)
+                .u128_str("amountYocto", op.amount)
+                .u64_num("createdAtBlock", op.created_at_block)
+                .str("note", &note),
         );
     }
 
@@ -357,14 +375,14 @@ impl Contract {
             self.pending_job_storage_deposit = None;
             self.storage_deposit_lower_executable_at = 0;
             self.job_storage_deposit = val;
-            events::simple("JobStorageDepositSet", json!({"amountYocto": val.to_string()}));
+            events::simple("JobStorageDepositSet", JsonObj::new().u128_str("amountYocto", val));
         } else {
             let exec_at = crate::block_timestamp_sec() + TIMELOCK_DELAY_SEC;
             self.pending_job_storage_deposit = Some(val);
             self.storage_deposit_lower_executable_at = exec_at;
             events::simple(
                 "JobStorageDepositLowerQueued",
-                json!({"amountYocto": val.to_string(), "executableAt": exec_at}),
+                JsonObj::new().u128_str("amountYocto", val).u64_num("executableAt", exec_at),
             );
         }
     }
@@ -381,7 +399,7 @@ impl Contract {
         self.pending_job_storage_deposit = None;
         self.storage_deposit_lower_executable_at = 0;
         self.job_storage_deposit = val;
-        events::simple("JobStorageDepositSet", json!({"amountYocto": val.to_string()}));
+        events::simple("JobStorageDepositSet", JsonObj::new().u128_str("amountYocto", val));
     }
 
     /// Returns the in-flight `near_op_id` holding the per-account storage-withdraw lock, if any.

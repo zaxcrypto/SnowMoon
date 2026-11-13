@@ -1,8 +1,7 @@
 //! Governance module: pause circuit breakers, 2-day timelocked cap raises & admin transfers, allowlists.
-use crate::events;
+use crate::events::{self, JsonObj};
 use crate::{block_timestamp_sec, Contract, ContractExt, TIMELOCK_DELAY_SEC};
 use near_sdk::json_types::U128;
-use near_sdk::serde_json::json;
 use near_sdk::{assert_one_yocto, env, near, require, AccountId};
 
 impl Contract {
@@ -15,7 +14,9 @@ impl Contract {
         self.max_advance = max_advance;
         events::simple(
             "CapsSet",
-            json!({"maxTotalExposure": max_total_exposure.to_string(), "maxAdvance": max_advance.to_string()}),
+            JsonObj::new()
+                .u128_str("maxTotalExposure", max_total_exposure)
+                .u128_str("maxAdvance", max_advance),
         );
     }
 
@@ -33,7 +34,7 @@ impl Contract {
         assert_one_yocto();
         self.require_admin();
         self.vault_paused = paused;
-        events::simple("VaultPauseSet", json!({"paused": paused}));
+        events::simple("VaultPauseSet", JsonObj::new().bool("paused", paused));
     }
 
     #[payable]
@@ -41,7 +42,7 @@ impl Contract {
         assert_one_yocto();
         self.require_admin();
         self.pool_paused = paused;
-        events::simple("PoolPauseSet", json!({"paused": paused}));
+        events::simple("PoolPauseSet", JsonObj::new().bool("paused", paused));
     }
 
     #[payable]
@@ -52,7 +53,7 @@ impl Contract {
         self.max_job_payment = max_job_payment.0;
         events::simple(
             "MaxJobPaymentSet",
-            json!({"maxJobPayment": max_job_payment.0.to_string()}),
+            JsonObj::new().u128_str("maxJobPayment", max_job_payment.0),
         );
     }
 
@@ -78,14 +79,17 @@ impl Contract {
             self.cap_raise_executable_at = executable_at;
             events::simple(
                 "CapsRaiseQueued",
-                json!({"maxTotalExposure": e.to_string(), "maxAdvance": a.to_string(), "executableAt": executable_at}),
+                JsonObj::new()
+                    .u128_str("maxTotalExposure", e)
+                    .u128_str("maxAdvance", a)
+                    .u64_num("executableAt", executable_at),
             );
             return;
         }
 
         if self.cap_raise_executable_at != 0 {
             self.clear_cap_raise();
-            events::simple("CapsRaiseCancelled", json!({}));
+            events::simple("CapsRaiseCancelled", JsonObj::new());
         }
         self.apply_caps_internal(e, a);
     }
@@ -109,7 +113,7 @@ impl Contract {
         self.require_admin();
         require!(self.cap_raise_executable_at != 0, "ERR_NO_CAP_RAISE_QUEUED");
         self.clear_cap_raise();
-        events::simple("CapsRaiseCancelled", json!({}));
+        events::simple("CapsRaiseCancelled", JsonObj::new());
     }
 
     #[payable]
@@ -117,7 +121,7 @@ impl Contract {
         assert_one_yocto();
         self.require_admin();
         self.deposit_allowlist_enabled = enabled;
-        events::simple("DepositAllowlistSet", json!({"enabled": enabled}));
+        events::simple("DepositAllowlistSet", JsonObj::new().bool("enabled", enabled));
     }
 
     #[payable]
@@ -131,7 +135,7 @@ impl Contract {
         }
         events::simple(
             "DepositorAllowed",
-            json!({"depositor": account, "allowed": allowed}),
+            JsonObj::new().acc("depositor", &account).bool("allowed", allowed),
         );
     }
 
@@ -146,7 +150,7 @@ impl Contract {
         }
         events::simple(
             "RelayerAllowed",
-            json!({"relayer": account, "allowed": allowed}),
+            JsonObj::new().acc("relayer", &account).bool("allowed", allowed),
         );
     }
 
@@ -157,7 +161,7 @@ impl Contract {
         if new_admin == self.admin {
             self.pending_admin = None;
             self.admin_transfer_acceptable_at = 0;
-            events::simple("AdminTransferCancelled", json!({}));
+            events::simple("AdminTransferCancelled", JsonObj::new());
             return;
         }
         let acceptable_at = block_timestamp_sec() + TIMELOCK_DELAY_SEC;
@@ -166,7 +170,10 @@ impl Contract {
         self.admin_transfer_acceptable_at = acceptable_at;
         events::simple(
             "AdminTransferStarted",
-            json!({"currentAdmin": current, "pendingAdmin": new_admin, "acceptableAt": acceptable_at}),
+            JsonObj::new()
+                .acc("currentAdmin", &current)
+                .acc("pendingAdmin", &new_admin)
+                .u64_num("acceptableAt", acceptable_at),
         );
     }
 
@@ -188,7 +195,7 @@ impl Contract {
         self.admin_transfer_acceptable_at = 0;
         events::simple(
             "AdminTransferred",
-            json!({"previousAdmin": prev, "newAdmin": caller}),
+            JsonObj::new().acc("previousAdmin", &prev).acc("newAdmin", &caller),
         );
     }
 

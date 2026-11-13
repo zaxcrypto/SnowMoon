@@ -1,11 +1,10 @@
 //! JobVault module (escrow lifecycle, authorization, and audit verification view).
-use crate::events;
+use crate::events::{self, JsonObj};
 use crate::types::{
     AdvanceStatus, AuditJobVerification, Hex32, Job, JobStatus, JobView, PendingOpKind,
 };
 use crate::{block_timestamp_sec, Contract, ContractExt, MIN_PREPAID_GAS_PAYOUT};
 use near_sdk::json_types::U128;
-use near_sdk::serde_json::json;
 use near_sdk::{env, near, require, AccountId, Promise, PromiseOrValue};
 
 impl Contract {
@@ -57,10 +56,16 @@ impl Contract {
 
         events::simple(
             "JobCreated",
-            json!({"jobId": job_id.to_hex(), "creator": sender_id, "seq": seq, "customer": sender_id, "operator": operator,
-                   "customerPaymentAtomic": amount.to_string(),
-                   "maxOperatingBudgetAtomic": max_operating_budget.to_string(),
-                   "termsHash": terms_hash.to_hex(), "deadline": deadline}),
+            JsonObj::new()
+                .hex("jobId", &job_id)
+                .acc("creator", &sender_id)
+                .u64_num("seq", seq)
+                .acc("customer", &sender_id)
+                .acc("operator", &operator)
+                .u128_str("customerPaymentAtomic", amount)
+                .u128_str("maxOperatingBudgetAtomic", max_operating_budget)
+                .hex("termsHash", &terms_hash)
+                .u64_num("deadline", deadline),
         );
         events::job_funded(&job_id, amount);
         PromiseOrValue::Value(U128(0))
@@ -134,10 +139,16 @@ impl Contract {
 
         events::simple(
             "JobCreated",
-            json!({"jobId": job_id.to_hex(), "creator": caller, "seq": seq, "customer": customer, "operator": operator,
-                   "customerPaymentAtomic": customer_payment.0.to_string(),
-                   "maxOperatingBudgetAtomic": max_operating_budget.0.to_string(),
-                   "termsHash": terms_hash.to_hex(), "deadline": deadline}),
+            JsonObj::new()
+                .hex("jobId", &job_id)
+                .acc("creator", &caller)
+                .u64_num("seq", seq)
+                .acc("customer", &customer)
+                .acc("operator", &operator)
+                .u128_str("customerPaymentAtomic", customer_payment.0)
+                .u128_str("maxOperatingBudgetAtomic", max_operating_budget.0)
+                .hex("termsHash", &terms_hash)
+                .u64_num("deadline", deadline),
         );
         job_id
     }
@@ -148,7 +159,7 @@ impl Contract {
         require!(env::predecessor_account_id() == job.operator, "ERR_NOT_OPERATOR");
         require!(job.status == JobStatus::Funded, "ERR_INVALID_STATUS");
         job.status = JobStatus::InProgress;
-        events::simple("WorkStarted", json!({"jobId": job_id.to_hex()}));
+        events::simple("WorkStarted", JsonObj::new().hex("jobId", &job_id));
     }
 
     pub fn record_expense(&mut self, job_id: Hex32, amount: U128, receipt_hash: Hex32) {
@@ -271,8 +282,10 @@ impl Contract {
         self.release_locked_storage(&sponsor, locked);
         events::simple(
             "JobCancelled",
-            json!({"jobId": job_id.to_hex(), "storageRefundedYocto": locked.to_string(),
-                   "storageRefundedTo": sponsor}),
+            JsonObj::new()
+                .hex("jobId", &job_id)
+                .u128_str("storageRefundedYocto", locked)
+                .acc("storageRefundedTo", &sponsor),
         );
     }
 

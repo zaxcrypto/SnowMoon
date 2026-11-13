@@ -1,5 +1,5 @@
 //! FloatPool module: symmetric virtual-offset LP vault, advance issuance, repayment & write-off (POD-01A, POD-04B, POD-05B).
-use crate::events;
+use crate::events::{self, JsonObj};
 use crate::math::{
     self, BPS, FEE_BPS, MIN_DEPOSIT_USDC, ORG_EXPOSURE_CAP_BPS, RESERVE_CUT_BPS,
     UTILIZATION_CAP_BPS,
@@ -10,7 +10,6 @@ use crate::types::{
 };
 use crate::{block_timestamp_sec, Contract, ContractExt, MIN_PREPAID_GAS_PAYOUT};
 use near_sdk::json_types::U128;
-use near_sdk::serde_json::json;
 use near_sdk::{assert_one_yocto, env, near, require, AccountId, Promise, PromiseOrValue};
 
 impl Contract {
@@ -23,7 +22,7 @@ impl Contract {
         if self.total_assets == 0 && self.total_shares > 0 {
             self.total_shares = 0;
             self.share_epoch += 1;
-            events::simple("PoolEpochReset", json!({"newEpoch": self.share_epoch}));
+            events::simple("PoolEpochReset", JsonObj::new().u64_num("newEpoch", self.share_epoch));
         }
     }
 
@@ -75,10 +74,14 @@ impl Contract {
         // Decision 3 condition 1: disclose who paid the storage stake and who owns (and is refunded) it.
         events::simple(
             "Deposited",
-            json!({"lp": recipient, "epoch": self.share_epoch,
-                   "assetsAtomic": assets.to_string(), "shares": shares.to_string(),
-                   "storageStakePayer": sender_id, "storageStakeOwner": recipient,
-                   "storageStakeChargedYocto": stake_charged.to_string()}),
+            JsonObj::new()
+                .acc("lp", &recipient)
+                .u64_num("epoch", self.share_epoch)
+                .u128_str("assetsAtomic", assets)
+                .u128_str("shares", shares)
+                .acc("storageStakePayer", &sender_id)
+                .acc("storageStakeOwner", &recipient)
+                .u128_str("storageStakeChargedYocto", stake_charged),
         );
         PromiseOrValue::Value(U128(0))
     }
@@ -131,7 +134,10 @@ impl Contract {
             self.release_locked_storage(lp, entry.storage_stake);
             events::simple(
                 "ShareEntryReleased",
-                json!({"lp": lp, "epoch": epoch, "storageRefundedYocto": entry.storage_stake.to_string()}),
+                JsonObj::new()
+                    .acc("lp", lp)
+                    .u64_num("epoch", epoch)
+                    .u128_str("storageRefundedYocto", entry.storage_stake),
             );
         }
     }
@@ -196,7 +202,7 @@ impl Contract {
 
         // Stage 1: Operator bond (0 until P1)
         let bond_slashed = 0u128;
-        events::simple("BondSlashed", json!({"jobId": job_id.to_hex(), "amountAtomic": "0"}));
+        events::simple("BondSlashed", JsonObj::new().hex("jobId", job_id).str("amountAtomic", "0"));
 
         let remaining = loss - bond_slashed;
         // Stage 2: First-loss reserve
@@ -204,7 +210,7 @@ impl Contract {
         self.reserve -= reserve_used;
         events::simple(
             "ReserveDrawn",
-            json!({"jobId": job_id.to_hex(), "amountAtomic": reserve_used.to_string()}),
+            JsonObj::new().hex("jobId", job_id).u128_str("amountAtomic", reserve_used),
         );
 
         // Stage 3: Socialized LP loss
@@ -215,7 +221,7 @@ impl Contract {
             .expect("ERR_ASSETS_UNDERFLOW");
         events::simple(
             "LossSocialized",
-            json!({"jobId": job_id.to_hex(), "amountAtomic": socialized.to_string()}),
+            JsonObj::new().hex("jobId", job_id).u128_str("amountAtomic", socialized),
         );
 
         self.maybe_reset_epoch();

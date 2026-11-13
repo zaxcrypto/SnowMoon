@@ -1,10 +1,9 @@
 //! Async NEP-141 outbound transfers, callbacks, pull-claims, and non-crediting stuck-op flags (MC-03, MC-06, FC-03).
-use crate::events;
+use crate::events::{self, JsonObj};
 use crate::storage_credits::LP_CLAIM_SLOT_STAKE;
 use crate::types::{AdvanceStatus, ClaimEntry, JobStatus, PendingOp, PendingOpKind, PendingOpView};
 use crate::{ext_ft, Contract, ContractExt, GAS_FT_TRANSFER, GAS_PAYOUT_CALLBACK};
 use near_sdk::json_types::U128;
-use near_sdk::serde_json::json;
 use near_sdk::{assert_one_yocto, env, near, require, AccountId, NearToken, Promise};
 
 impl Contract {
@@ -72,7 +71,7 @@ impl Contract {
             .expect("ERR_TOTAL_CLAIMABLE_OVERFLOW");
         events::simple(
             "ClaimableCredited",
-            json!({"opId": op_id, "account": beneficiary, "amountAtomic": amount.to_string()}),
+            JsonObj::new().u64_num("opId", op_id).acc("account", beneficiary).u128_str("amountAtomic", amount),
         );
     }
 
@@ -125,7 +124,7 @@ impl Contract {
         }
 
         let Some(op) = self.pending_ops.remove(&op_id) else {
-            events::simple("PayoutCallbackAnomaly", json!({"opId": op_id}));
+            events::simple("PayoutCallbackAnomaly", JsonObj::new().u64_num("opId", op_id));
             return;
         };
 
@@ -199,7 +198,7 @@ impl Contract {
                 }
                 events::simple(
                     "JobRefunded",
-                    json!({"jobId": job_id.to_hex(), "amountAtomic": op.amount.to_string(), "settledVia": via}),
+                    JsonObj::new().hex("jobId", &job_id).u128_str("amountAtomic", op.amount).str("settledVia", via),
                 );
             }
             PendingOpKind::LpWithdraw { lp, epoch } => {
@@ -212,7 +211,11 @@ impl Contract {
                 self.maybe_release_share_entry(epoch, &lp);
                 events::simple(
                     "Withdrawn",
-                    json!({"lp": lp, "recipient": op.recipient, "amountAtomic": op.amount.to_string(), "settledVia": via}),
+                    JsonObj::new()
+                        .acc("lp", &lp)
+                        .acc("recipient", &op.recipient)
+                        .u128_str("amountAtomic", op.amount)
+                        .str("settledVia", via),
                 );
             }
             PendingOpKind::Claim { owner } => {
@@ -226,19 +229,22 @@ impl Contract {
                 if succeeded {
                     events::simple(
                         "UsdcClaimed",
-                        json!({"owner": owner, "recipient": op.recipient, "amountAtomic": op.amount.to_string()}),
+                        JsonObj::new()
+                            .acc("owner", &owner)
+                            .acc("recipient", &op.recipient)
+                            .u128_str("amountAtomic", op.amount),
                     );
                 } else {
                     events::simple(
                         "ClaimFailed",
-                        json!({"opId": op_id, "owner": owner, "amountAtomic": op.amount.to_string()}),
+                        JsonObj::new().u64_num("opId", op_id).acc("owner", &owner).u128_str("amountAtomic", op.amount),
                     );
                 }
             }
         }
 
         if op.flagged_stuck {
-            events::simple("StuckOpResolved", json!({"opId": op_id, "outcome": via}));
+            events::simple("StuckOpResolved", JsonObj::new().u64_num("opId", op_id).str("outcome", via));
         }
     }
 
@@ -286,8 +292,12 @@ impl Contract {
         self.pool_paused = true;
         events::simple(
             "StuckOpFlagged",
-            json!({"opId": op_id, "recipient": op.recipient, "amountAtomic": op.amount.to_string(),
-                   "createdAtBlock": op.created_at_block, "note": note}),
+            JsonObj::new()
+                .u64_num("opId", op_id)
+                .acc("recipient", &op.recipient)
+                .u128_str("amountAtomic", op.amount)
+                .u64_num("createdAtBlock", op.created_at_block)
+                .str("note", &note),
         );
     }
 
