@@ -61,6 +61,15 @@ jobs:
         run: cargo test --locked -p snapfall-core -p snapfall-audit --lib -- --nocapture
       - name: Package and verify production WASM artifacts
         run: bash ./scripts/package-production-wasm.sh
+      - name: Upload pure-MVP production WASM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: snowmoon-production-wasm
+          path: |
+            near/artifacts/production/snapfall_core.wasm
+            near/artifacts/production/snapfall_audit.wasm
+            near/artifacts/production/SHA256SUMS
+          retention-days: 30
       - name: Build test-only WASMs for Sandbox suite
         run: |
           cargo +nightly build -Z build-std=std,panic_abort -p mock-ft --target wasm32-unknown-unknown --release
