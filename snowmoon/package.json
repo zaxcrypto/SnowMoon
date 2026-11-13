@@ -10,7 +10,13 @@
   "scripts": {
     "start": "node --experimental-strip-types src/server.ts",
     "dev": "node --experimental-strip-types --watch src/server.ts",
-    "test": "node --experimental-strip-types --test test/mvp-journey.test.ts"
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit",
+    "outlayer:smoke": "node --experimental-strip-types src/outlayer-smoke.ts",
+    "test": "node --experimental-strip-types --test --test-concurrency=1 test/mvp-journey.test.ts test/mainnet-escrow.test.ts test/workforce-e2e.test.ts test/phase9-e2e.test.ts test/phase10-security.test.ts test/phase11-launch.test.ts test/phase13-audit.test.ts test/phase14-e2e.test.ts test/phase15-release.test.ts test/phase16-rc.test.ts test/phase17-audit-anchor.test.ts test/phase19-launch-readiness.test.ts test/phase20-production-policy.test.ts test/phase21-launch-validation.test.ts test/phase22-workforce-e2e.test.ts test/phase23-production-readiness.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
   }
 }
-

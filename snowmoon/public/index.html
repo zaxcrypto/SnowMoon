@@ -294,8 +294,8 @@
         <option value="admin.snowmoon.test.near">Protocol Admin (admin.snowmoon.test.near)</option>
       </select>
       <span class="badge badge-ok" id="wallet-balance-pill">$2,500.00 USDC</span>
-      <button class="btn-success" onclick="runComplete12StepJourney()">▶ Run Complete 12-Step Journey</button>
-      <button class="btn-secondary" onclick="resetSandbox()">↺ Reset State</button>
+      <button id="btn-run-12step" class="btn-success" onclick="runComplete12StepJourney()">▶ Run Complete 12-Step Journey</button>
+      <button id="btn-reset-sandbox" class="btn-secondary" onclick="resetSandbox()">↺ Reset State</button>
     </div>
   </header>
 
@@ -360,6 +360,22 @@
         </div>
       </div>
 
+      <div class="card" style="margin-bottom: 24px;">
+        <h2>
+          <span>Live NEAR Mainnet RPC & Contract Deployment Status (Read-Only Probe)</span>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <span class="badge badge-info" id="nm-rpc-badge">MAINNET RPC: NOT SYNCED YET</span>
+            <button class="btn-secondary" style="padding:4px 10px; font-size:12px;" onclick="syncNearMainnetStatus()">↻ Query NEAR Mainnet RPC</button>
+          </div>
+        </h2>
+        <p style="font-size: 12px; color: var(--muted); margin-bottom: 12px;">
+          Queries <code>https://rpc.mainnet.near.org</code> directly for live chain height, native Circle USDC (<code>17208628...133a1</code>) <code>ft_metadata</code> / <code>ft_balance_of</code> / <code>storage_balance_bounds</code>, account states (<code>cryptozax.near</code> & OutLayer executor), and SnowMoon Core/Audit deployment status. <strong>All real transactions remain disabled until contract deployment, wallet authorization, and transaction simulation are verified.</strong>
+        </p>
+        <div id="nm-status-summary">
+          <p class="mono" style="font-size:12px; color:var(--muted);">Click "↻ Query NEAR Mainnet RPC" to load live Mainnet RPC telemetry.</p>
+        </div>
+      </div>
+
       <div class="grid-2">
         <div class="card">
           <h2>Participant USDC Balances (Sandbox Ledger)</h2>
@@ -416,7 +432,110 @@
               Atomic `CreateAndFundJob` (Lock USDC escrow immediately in one step)
             </label>
           </div>
-          <button onclick="createJobFromForm()">Create Job on SnowMoon Core</button>
+          <div style="display:flex; gap:10px; flex-wrap:wrap;">
+            <button onclick="createJobFromForm()">Create Job on SnowMoon Core (Sandbox)</button>
+            <button class="btn-secondary" onclick="prepareMainnetEscrowTxFromForm()">🔍 Prepare Unsigned Mainnet NEP-141 `ft_transfer_call` Payload</button>
+          </div>
+          <div id="cj-prepared-tx-box" style="display:none; margin-top:12px;">
+            <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:6px;">
+              <span class="badge badge-sandbox">UNSIGNED TRANSACTION PREPARATION ONLY — NOT EXECUTED</span>
+              <span class="badge badge-danger">WALLET SIGNED: FALSE • ON-CHAIN VERIFIED: FALSE</span>
+            </div>
+            <p class="mono" style="font-size:11px; color:#fbbf24; margin-bottom:6px;">
+              This payload is a local unsigned draft for inspection/simulation only. No wallet signature has been requested and no transaction has been broadcast to NEAR Mainnet.
+            </p>
+            <pre class="deliverable-box" id="cj-prepared-tx-json"></pre>
+          </div>
+        </div>
+
+        <div class="card" style="grid-column: 1 / -1;">
+          <h2>Live NEAR Mainnet Customer Wallet &amp; Real USDC Escrow (<code>core.cryptozax.near</code>)</h2>
+          <p style="font-size:13px; color:var(--muted); margin-bottom:12px;">
+            Connect a NEAR Mainnet customer wallet (Meteor Wallet, MyNearWallet, or NEAR Wallet Selector). SnowMoon never requests or stores private keys.
+          </p>
+          <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:12px;">
+            <input id="mn-wallet-account" type="text" placeholder="customer.near" style="max-width:240px;" />
+            <select id="mn-wallet-type" style="max-width:210px;">
+              <option value="meteor">Meteor Wallet (Mainnet)</option>
+              <option value="mynearwallet">MyNearWallet (Mainnet)</option>
+              <option value="injected-selector">NEAR Wallet Selector (Injected)</option>
+            </select>
+            <button onclick="connectMainnetWallet()">Connect &amp; Verify Mainnet Wallet</button>
+            <button class="btn-secondary" onclick="disconnectMainnetWallet()">Disconnect</button>
+            <span id="mn-wallet-badge" class="badge badge-sandbox">WALLET DISCONNECTED</span>
+          </div>
+          <div id="mn-customer-state-box" style="display:none; margin-bottom:12px;"></div>
+          <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px;">
+            <button class="btn-secondary" onclick="prepareCustomerRegistrationFlow()">1. Check &amp; Prepare Storage Registration</button>
+            <button onclick="prepareAndFundMainnetJob()">2. Prepare / Sign Real Mainnet CreateAndFundJob (USDC)</button>
+            <button class="btn-secondary" onclick="refreshMainnetEscrowJobs()">↻ Refresh Mainnet Escrow Jobs</button>
+          </div>
+          <div id="mn-escrow-plan-box" style="display:none; margin-bottom:12px;">
+            <pre class="deliverable-box" id="mn-escrow-plan-json"></pre>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Job ID (On-Chain)</th>
+                <th>Customer</th>
+                <th>USDC Amount</th>
+                <th>Escrow State</th>
+                <th>Source Tx Hash</th>
+                <th>On-Chain Confirmation</th>
+                <th>Delivery &amp; Settlement</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="mn-escrow-jobs-tbody">
+              <tr><td colspan="8" style="color:var(--muted);">No Mainnet escrow intents recorded in this session yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="card" style="grid-column: 1 / -1;">
+          <h2>
+            <span>NEAR Intents 1Click Cross-Chain USDC Funding (<code>1click.chaindefuser.com</code>)</span>
+            <span class="badge badge-info">MAINNET ONLY • NO TESTNET</span>
+          </h2>
+          <p style="font-size:13px; color:var(--muted); margin-bottom:12px;">
+            Discover supported cross-chain assets, preview a 1Click <code>EXACT_INPUT</code> quote to native NEAR USDC, track swap status, and independently verify destination USDC on NEAR Mainnet before unlocking Core escrow.
+          </p>
+          <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:12px;">
+            <button class="btn-secondary" onclick="discoverIntentsTokens()">1. Discover 1Click Tokens</button>
+            <select id="ni-origin-asset" style="max-width:340px;">
+              <option value="">Click "Discover 1Click Tokens" to load routes…</option>
+            </select>
+            <input id="ni-source-wallet" type="text" placeholder="Source wallet / refundTo address" style="max-width:260px;" />
+            <input id="ni-amount-atomic" type="text" value="5000000" placeholder="Amount (atomic)" style="max-width:160px;" />
+            <input id="ni-slippage-bps" type="number" value="100" placeholder="Slippage bps" style="max-width:120px;" />
+            <button onclick="requestIntentsDryQuote()">2. Preview Quote (dry=true)</button>
+            <button class="btn-secondary" onclick="refreshIntentsList()">↻ Refresh Intents</button>
+          </div>
+          <div id="ni-quote-box" style="display:none; margin-bottom:12px;">
+            <pre class="deliverable-box" id="ni-quote-json"></pre>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Intent ID</th>
+                <th>Route</th>
+                <th>Deposit Address</th>
+                <th>Status</th>
+                <th>Expected / Received USDC</th>
+                <th>Destination Verified</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="ni-intents-tbody">
+              <tr><td colspan="7" style="color:var(--muted);">No NEAR Intents swaps tracked yet.</td></tr>
+            </tbody>
+          </table>
+          <div id="ni-escrow-bridge-box" style="display:none; margin-top:12px;">
+            <pre class="deliverable-box" id="ni-escrow-bridge-json"></pre>
+          </div>
+          <div id="launch-readiness-strip" style="margin-top:12px; padding:10px; border:1px solid var(--border); border-radius:8px; font-size:12px; color:var(--muted);">
+            Loading database &amp; AuditAnchor readiness…
+          </div>
         </div>
 
         <div class="card">
@@ -513,17 +632,86 @@
         <h2>Executed AI Deliverables & Cryptographic Evidence Hashes</h2>
         <div id="wf-deliverables-container"></div>
       </div>
+
+      <div class="card" style="margin-top: 20px;">
+        <h2>
+          <span>Phase 3–5 Workforce Registry, Verification &amp; Settlement (DEMO / Unsigned Mainnet Prep)</span>
+          <span class="badge badge-sandbox">DEMO WORKFORCE + UNSIGNED MAINNET SETTLEMENT PREP</span>
+        </h2>
+        <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px;">
+          <input id="wf-reg-id" type="text" placeholder="worker-01" style="max-width:150px;" />
+          <input id="wf-reg-account" type="text" placeholder="worker.near" style="max-width:180px;" />
+          <input id="wf-reg-caps" type="text" placeholder="research,analysis" style="max-width:200px;" />
+          <button onclick="registerWorkforceWorker()">Register Worker</button>
+          <button class="btn-secondary" onclick="refreshWorkforceDashboard()">↻ Refresh Workforce, Verification &amp; Settlement</button>
+        </div>
+        <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px;">
+          <input id="wf-job-id" type="text" placeholder="0x... (optional auto jobId)" style="max-width:210px;" />
+          <input id="wf-job-caps" type="text" placeholder="research" style="max-width:140px;" />
+          <input id="wf-job-amount" type="text" placeholder="1000000" style="max-width:120px;" />
+          <input id="wf-job-prompt" type="text" placeholder="Task prompt for worker execution" style="flex:1; min-width:220px;" />
+          <button onclick="registerWorkforceJobUi()">Register Job</button>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Worker ID</th>
+              <th>NEAR Account</th>
+              <th>Capabilities</th>
+              <th>Available</th>
+              <th>Active / Completed</th>
+              <th>Earnings (USDC Atomic)</th>
+            </tr>
+          </thead>
+          <tbody id="wf-registry-tbody">
+            <tr><td colspan="6" style="color:var(--muted);">No workers registered yet.</td></tr>
+          </tbody>
+        </table>
+        <div style="margin-top:16px;">
+          <table>
+            <thead>
+              <tr>
+                <th>Job ID</th>
+                <th>State / Recovery</th>
+                <th>Assigned Worker</th>
+                <th>AI (Outside TEE) vs OutLayer TEE</th>
+                <th>Evidence &amp; Delivery</th>
+                <th>Verification &amp; AuditAnchor</th>
+                <th>Settlement / Refund</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="wf-jobs-tbody">
+              <tr><td colspan="8" style="color:var(--muted);">No workforce jobs tracked yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
     </section>
 
     <!-- ==================== VIEW 5: APPROVALS ==================== -->
     <section id="view-approvals" class="view-section">
+      <div class="card" style="margin-bottom: 20px;">
+        <h2>
+          <span>Live OutLayer Agent Wallet & Policy Status (Read-Only API Sync)</span>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <span class="badge badge-info" id="ol-live-status-badge">CHECKING OUTLAYER...</span>
+            <button class="btn-secondary" style="padding:4px 10px; font-size:12px;" onclick="refreshOutlayerStatus()">↻ Sync Live OutLayer Status</button>
+          </div>
+        </h2>
+        <p style="font-size: 12px; color: var(--muted); margin-bottom: 12px;">
+          Read-only status queried directly from OutLayer API (`/wallet/v1/address?chain=near`, `/wallet/v1/balance`, `/wallet/v1/policy`, `/wallet/v1/requests`). <strong>No transactions are signed or broadcast.</strong>
+        </p>
+        <div id="ol-wallet-summary"></div>
+      </div>
+
       <div class="card">
         <h2>
-          <span>OutLayer Operator Approval Queue (Step 8)</span>
+          <span>Local Sandbox Operator Approval Queue (Step 8 — Simulated Spend Approvals)</span>
           <span class="badge badge-purple" id="ap-adapter-badge">OUTLAYER POLICY ENGINE</span>
         </h2>
         <p style="font-size: 13px; color: var(--muted); margin-bottom: 14px;">
-          Spending requests above the autonomous micro-spend threshold (<strong>$0.10 USDC</strong>) are held here until the Operator approves or rejects them. Each approval binds a SHA-256 payload hash (`jobId | vendor | amount`) to prevent post-approval substitution.
+          Spending requests above the autonomous micro-spend threshold (<strong>$0.10 USDC</strong>) are held here in the local sandbox queue until the Operator approves or rejects them. Each approval binds a SHA-256 payload hash (`jobId | vendor | amount`) to prevent post-approval substitution.
         </p>
         <table>
           <thead>
@@ -602,6 +790,26 @@
         <p style="font-size: 13px; color: var(--muted); margin-bottom: 14px;">
           `AuditAnchor::anchor_job` performs an asynchronous cross-contract call to `snapfall-core::verify_job_for_audit`, verifying that the job exists, is in `Delivered` or `Accepted` state, and has a non-zero `delivery_hash` before writing an immutable anchor record.
         </p>
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:14px;">
+          <div id="audit-contract-summary" class="mono" style="font-size:12px; color:var(--muted);">
+            AuditAnchor: loading status...
+          </div>
+          <button class="btn-secondary" onclick="recoverInterruptedAnchors()">Recover / Reconcile Interrupted Anchors</button>
+        </div>
+        <h3 style="font-size:14px; margin: 10px 0 8px;">On-Chain AuditAnchor Submissions &amp; Reconciliation</h3>
+        <table style="margin-bottom:18px;">
+          <thead>
+            <tr>
+              <th>Job ID</th>
+              <th>Evidence Hash</th>
+              <th>Anchor Status</th>
+              <th>Tx Hash</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="audit-submissions-tbody"></tbody>
+        </table>
+        <h3 style="font-size:14px; margin: 10px 0 8px;">Sandbox Anchored Registry</h3>
         <table>
           <thead>
             <tr>
@@ -666,12 +874,19 @@
     }
 
     async function apiPost(path, body = {}) {
+      const headers = { "Content-Type": "application/json" };
+      if (walletSessionToken) {
+        headers["x-wallet-session"] = walletSessionToken;
+      }
       const resp = await fetch(path, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify(body),
       });
       const data = await resp.json();
+      if (resp.status === 401 && typeof disconnectMainnetWallet === "function") {
+        disconnectMainnetWallet();
+      }
       if (!resp.ok || data.ok === false) {
         throw new Error(data.error || "Request failed");
       }
@@ -695,9 +910,25 @@
       document.getElementById("banner-chain-mode").textContent =
         `CHAIN MODE: ${env.chainMode.toUpperCase()} (${env.network.toUpperCase()})`;
       document.getElementById("banner-ai-mode").textContent = env.aiAdapterLabel;
+      document.getElementById("banner-ai-mode").className =
+        env.aiMode === "near_ai" && env.hasNearAiKey
+          ? "badge badge-ok"
+          : "badge badge-info";
       document.getElementById("banner-wallet-mode").textContent = env.walletAdapterLabel;
       document.getElementById("banner-core-id").textContent = env.coreContractId;
-      document.getElementById("banner-audit-id").textContent = env.auditContractId;
+      document.getElementById("banner-audit-id").textContent =
+        env.network === "mainnet" ? env.mainnetAuditContractId : env.auditContractId;
+      const sandboxAllowed = env.allowSandboxDemoEndpoints !== false;
+      const runBtn = document.getElementById("btn-run-12step");
+      const resetBtn = document.getElementById("btn-reset-sandbox");
+      if (runBtn) {
+        runBtn.disabled = !sandboxAllowed;
+        runBtn.title = sandboxAllowed ? "" : "Disabled in production mode";
+      }
+      if (resetBtn) {
+        resetBtn.disabled = !sandboxAllowed;
+        resetBtn.title = sandboxAllowed ? "" : "Disabled in production mode";
+      }
 
       // Wallet balance pill
       const w = getSelectedWallet();
@@ -737,6 +968,9 @@
         )
         .join("");
 
+      // Live NEAR Mainnet RPC panel
+      renderNearMainnetPanel(state.nearMainnet);
+
       // Events table
       document.getElementById("ov-events-tbody").innerHTML = state.events
         .slice(0, 20)
@@ -755,7 +989,15 @@
 
       // Workforce view
       document.getElementById("wf-adapter-badge").textContent = env.aiAdapterLabel;
+      document.getElementById("wf-adapter-badge").className =
+        env.aiMode === "near_ai" && env.hasNearAiKey
+          ? "badge badge-ok"
+          : "badge badge-info";
       document.getElementById("wf-operator-id").textContent = env.accounts.operator;
+      document.getElementById("wf-model-name").textContent =
+        env.aiMode === "near_ai" && env.hasNearAiKey
+          ? `${env.nearAiModel} (${env.nearAiBaseUrl})`
+          : "snowmoon-deterministic-worker-v1 (Mock Fallback)";
       const wfSelect = document.getElementById("wf-job-select");
       wfSelect.innerHTML =
         state.jobs.length === 0
@@ -775,22 +1017,103 @@
           ? `<p style="color:var(--muted); font-size:13px;">No AI worker deliverables generated yet. Execute a job or click "Run Complete 12-Step Journey".</p>`
           : deliveredJobs
               .map(
-                (j) => `
+                (j) => {
+                  const ex = j.aiExecution;
+                  const isLive = ex.adapterMode === "near_ai";
+                  const modeBadgeClass = isLive ? "badge-ok" : "badge-sandbox";
+                  const usageHtml = ex.tokenUsage
+                    ? `<span>Tokens: <strong>Prompt ${ex.tokenUsage.promptTokens} + Completion ${ex.tokenUsage.completionTokens} = ${ex.tokenUsage.totalTokens} total</strong></span>`
+                    : `<span>Tokens: <strong>Local Deterministic (0 API tokens)</strong></span>`;
+                  const fallbackHtml = ex.fallbackReason
+                    ? `<div style="margin-top:6px; padding:6px 10px; background:rgba(245,158,11,0.12); border:1px solid rgba(245,158,11,0.4); border-radius:6px; font-size:11px; color:#fbbf24;" class="mono">Fallback Triggered: ${ex.fallbackReason}</div>`
+                    : "";
+                  return `
               <div style="border-top:1px solid var(--border); padding-top:12px; margin-top:12px;">
-                <div style="display:flex; justify-content:space-between; align-items:center;">
+                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
                   <strong>Job #${j.seq}: ${j.title}</strong>
-                  <span class="badge badge-info">${j.aiExecution.adapterLabel}</span>
+                  <span class="badge ${modeBadgeClass}">${ex.adapterLabel}</span>
                 </div>
-                <div class="mono" style="font-size:12px; color:var(--muted); margin-top:4px;">
-                  Delivery Hash: <strong style="color:var(--accent);">${j.deliveryHash}</strong>
+                <div class="mono" style="font-size:12px; color:var(--muted); margin-top:6px; display:flex; flex-wrap:wrap; gap:16px;">
+                  <span>Mode: <strong style="color:${isLive ? "#34d399" : "#fbbf24"};">${isLive ? "LIVE NEAR AI CLOUD" : "MOCK FALLBACK"}</strong></span>
+                  <span>Model: <strong>${ex.model}</strong></span>
+                  ${ex.endpoint ? `<span>Endpoint: <strong>${ex.endpoint}</strong></span>` : ""}
+                  ${usageHtml}
+                  <span>Latency: <strong>${ex.durationMs}ms</strong></span>
+                  <span>Delivery Hash: <strong style="color:var(--accent);">${j.deliveryHash}</strong></span>
                 </div>
-                <pre class="deliverable-box">${j.aiExecution.deliverableMarkdown.replace(/</g, "&lt;")}</pre>
-              </div>`
+                ${fallbackHtml}
+                <pre class="deliverable-box">${ex.deliverableMarkdown.replace(/</g, "&lt;")}</pre>
+              </div>`;
+                }
               )
               .join("");
 
-      // Approvals view
+      // Approvals view & Live OutLayer Wallet status
       document.getElementById("ap-adapter-badge").textContent = env.walletAdapterLabel;
+      const ol = state.outlayerWallet;
+      const olBadge = document.getElementById("ol-live-status-badge");
+      const olSummary = document.getElementById("ol-wallet-summary");
+      if (ol && ol.authenticated) {
+        olBadge.className = "badge badge-ok";
+        olBadge.textContent = `LIVE OUTLAYER AUTHENTICATED (${ol.network.toUpperCase()} — READ-ONLY)`;
+        const approversStr =
+          ol.policy && ol.policy.approvers && ol.policy.approvers.length > 0
+            ? ol.policy.approvers.map((ap) => `${ap.id} (${ap.role})`).join(", ")
+            : "None";
+        const perTxNear =
+          ol.policy && ol.policy.limits && ol.policy.limits.perTransactionNativeYocto
+            ? (Number(ol.policy.limits.perTransactionNativeYocto) / 1e24).toFixed(2) + " NEAR"
+            : "N/A";
+        const dailyNear =
+          ol.policy && ol.policy.limits && ol.policy.limits.dailyNativeYocto
+            ? (Number(ol.policy.limits.dailyNativeYocto) / 1e24).toFixed(2) + " NEAR"
+            : "N/A";
+        olSummary.innerHTML = `
+          <table>
+            <tbody>
+              <tr>
+                <th>Wallet ID</th>
+                <td class="mono">${ol.walletId}</td>
+                <th>Network</th>
+                <td><span class="badge badge-ok">${ol.network.toUpperCase()}</span></td>
+              </tr>
+              <tr>
+                <th>NEAR Account / Executor Address</th>
+                <td class="mono">${ol.nearAddress}</td>
+                <th>Agent Account Role</th>
+                <td class="mono">${ol.agentAccountRole}</td>
+              </tr>
+              <tr>
+                <th>Controller Public Key</th>
+                <td class="mono">${ol.publicKey}</td>
+                <th>On-Chain Balances (Live Read-Only)</th>
+                <td class="mono">${(Number(ol.nativeNearBalanceYocto || "0") / 1e24).toFixed(4)} NEAR | ${fmtUsdc(ol.usdcBalanceAtomic || "0")} USDC</td>
+              </tr>
+              <tr>
+                <th>Stored Enclave Policy (v${ol.policy ? ol.policy.version : 1})</th>
+                <td class="mono">Per-Tx Limit: ${perTxNear} | Daily Limit: ${dailyNear} | Frozen: ${ol.policy ? ol.policy.frozen : false}</td>
+                <th>Authorized Approver(s)</th>
+                <td class="mono">${approversStr} (Threshold: ${ol.policy ? ol.policy.approvalThresholdRequired : 1})</td>
+              </tr>
+              <tr>
+                <th>Remote OutLayer Pending Requests</th>
+                <td class="mono">${ol.remotePendingRequestsCount} remote requests</td>
+                <th>Allowed Tx Types</th>
+                <td class="mono">${ol.policy ? ol.policy.transactionTypes.join(", ") : "-"}</td>
+              </tr>
+            </tbody>
+          </table>
+        `;
+      } else {
+        olBadge.className = "badge badge-sandbox";
+        olBadge.textContent = "MOCK OUTLAYER FALLBACK (LOCAL SIMULATION)";
+        olSummary.innerHTML = `<p style="font-size:12px; color:var(--muted);" class="mono">${
+          ol && ol.error
+            ? "OutLayer Live Sync Error: " + ol.error
+            : "OutLayer API key not configured or in mock mode. Using local deterministic policy simulation."
+        }</p>`;
+      }
+
       document.getElementById("approvals-tbody").innerHTML =
         state.approvals.length === 0
           ? `<tr><td colspan="7" style="color:var(--muted);">No escalated spending approvals yet.</td></tr>`
@@ -849,6 +1172,52 @@
               .join("");
 
       // Audit view
+      const verifications = Array.isArray(state.verifications) ? state.verifications : [];
+      const auditContractInfo = state.nearMainnet && state.nearMainnet.contracts ? state.nearMainnet.contracts.audit : null;
+      const summaryEl = document.getElementById("audit-contract-summary");
+      if (summaryEl) {
+        if (auditContractInfo) {
+          summaryEl.innerHTML = `Contract: <strong>${auditContractInfo.contractId}</strong> | Status: <span class="badge ${auditContractInfo.deploymentStatus === "DEPLOYED_AND_INITIALIZED" ? "badge-ok" : "badge-warn"}">${auditContractInfo.deploymentStatus}</span> | Core: <strong>${auditContractInfo.coreContract || state.config.mainnetCoreContractId}</strong> | Operator: <strong>${auditContractInfo.operatorAuthority || state.config.mainnetAuditOperatorAccountId || "-"}</strong>`;
+        } else {
+          summaryEl.textContent = `Contract: ${state.config.mainnetAuditContractId}`;
+        }
+      }
+
+      const subTbody = document.getElementById("audit-submissions-tbody");
+      if (subTbody) {
+        subTbody.innerHTML =
+          verifications.length === 0
+            ? `<tr><td colspan="5" style="color:var(--muted);">No verified deliveries queued for AuditAnchor yet.</td></tr>`
+            : verifications
+                .map((v) => {
+                  const st = v.anchorStatus || (v.auditTxHash ? "ANCHORED" : "NONE");
+                  const badgeCls =
+                    st === "ANCHORED"
+                      ? "badge-ok"
+                      : st === "FAILED"
+                      ? "badge-danger"
+                      : st === "PENDING" || st === "SUBMITTED" || st === "PREPARED"
+                      ? "badge-warn"
+                      : "badge-info";
+                  const txDisplay = v.auditTxHash ? shortHex(v.auditTxHash) : "-";
+                  let actionBtn = "";
+                  if (st === "SUBMITTED" || st === "PENDING") {
+                    actionBtn = `<button class="btn-secondary" onclick="reconcileAuditAnchor('${v.jobId}')">Reconcile Tx</button>`;
+                  } else if (v.verificationStatus === "VERIFIED" && (st === "NONE" || st === "FAILED")) {
+                    actionBtn = `<button class="btn-info" onclick="prepareMainnetAuditAnchor('${v.jobId}')">${st === "FAILED" ? "Retry Prepare" : "Prepare Anchor Tx"}</button>`;
+                  }
+                  return `
+                    <tr>
+                      <td class="mono">${shortHex(v.jobId)}</td>
+                      <td class="mono">${shortHex(v.evidenceHash)}</td>
+                      <td><span class="badge ${badgeCls}">${st}</span>${v.auditError ? `<div style="font-size:11px;color:var(--danger);margin-top:4px;">${v.auditError}</div>` : ""}</td>
+                      <td class="mono">${txDisplay}</td>
+                      <td>${actionBtn || "-"}</td>
+                    </tr>`;
+                })
+                .join("");
+      }
+
       document.getElementById("audit-tbody").innerHTML =
         state.anchors.length === 0
           ? `<tr><td colspan="6" style="color:var(--muted);">No jobs anchored on AuditAnchor yet.</td></tr>`
@@ -1089,6 +1458,36 @@
       }
     }
 
+    async function prepareMainnetAuditAnchor(jobId) {
+      try {
+        const res = await apiPost("/api/verification/prepare-audit-anchor", { jobId });
+        showToast(`Prepared AuditAnchor tx for ${res.anchorPlan.auditContractId} (status=PREPARED). Sign with operator wallet.`);
+        await refreshState();
+      } catch (e) {
+        showToast("Error: " + e.message);
+      }
+    }
+
+    async function reconcileAuditAnchor(jobId) {
+      try {
+        const res = await apiPost("/api/verification/reconcile-audit-anchor", { jobId });
+        showToast(`Reconciled anchor status: ${res.submission.anchorStatus}`);
+        await refreshState();
+      } catch (e) {
+        showToast("Error: " + e.message);
+      }
+    }
+
+    async function recoverInterruptedAnchors() {
+      try {
+        const res = await apiPost("/api/verification/recover-anchors", {});
+        showToast(`Anchor recovery checked=${res.recovery.checked}, anchored=${res.recovery.anchored}, pending=${res.recovery.pending}, failed=${res.recovery.failed}`);
+        await refreshState();
+      } catch (e) {
+        showToast("Error: " + e.message);
+      }
+    }
+
     async function lpDeposit() {
       try {
         const usd = Number(document.getElementById("fl-amount").value || "1000");
@@ -1142,7 +1541,794 @@
       }
     }
 
+    function renderNearMainnetPanel(nm) {
+      const badge = document.getElementById("nm-rpc-badge");
+      const summary = document.getElementById("nm-status-summary");
+      if (!badge || !summary) return;
+      if (!nm) {
+        badge.className = "badge badge-info";
+        badge.textContent = "MAINNET RPC: NOT SYNCED YET";
+        return;
+      }
+      if (nm.rpcReachable) {
+        badge.className = "badge badge-ok";
+        badge.textContent = `MAINNET RPC LIVE (Block #${nm.latestBlockHeight} • Protocol v${nm.protocolVersion})`;
+      } else {
+        badge.className = "badge badge-danger";
+        badge.textContent = "MAINNET RPC UNREACHABLE";
+      }
+
+      const acctRows = Object.values(nm.accounts || {})
+        .map(
+          (a) => `
+          <tr>
+            <td class="mono"><strong>${a.accountId}</strong></td>
+            <td><span class="badge ${a.exists ? "badge-ok" : "badge-sandbox"}">${
+              a.exists ? "EXISTS ON MAINNET" : "NOT CREATED YET"
+            }</span></td>
+            <td class="mono">${a.amountNear} NEAR (${a.storageUsageBytes} B)</td>
+            <td class="mono">${a.usdcBalanceFormatted}</td>
+            <td><span class="badge ${a.usdcStorageRegistered ? "badge-ok" : "badge-sandbox"}">${
+              a.usdcStorageRegistered ? "REGISTERED ON USDC" : "UNREGISTERED (Needs 0.00125 NEAR)"
+            }</span></td>
+          </tr>`
+        )
+        .join("");
+
+      const usdcMeta = nm.usdcMainnet && nm.usdcMainnet.metadata
+        ? `${nm.usdcMainnet.metadata.symbol} (${nm.usdcMainnet.metadata.spec}, ${nm.usdcMainnet.metadata.decimals} decimals)`
+        : "N/A";
+
+      summary.innerHTML = `
+        <table>
+          <tbody>
+            <tr>
+              <th>NEAR Mainnet RPC</th>
+              <td class="mono">${nm.rpcUrl} (Chain: <strong>${nm.chainId}</strong>, Block: <strong>#${nm.latestBlockHeight}</strong>)</td>
+              <th>Native USDC Contract</th>
+              <td class="mono">${nm.usdcMainnet.contractId.slice(0, 20)}… (${usdcMeta})</td>
+            </tr>
+            <tr>
+              <th>Core Contract (<code>${nm.contracts.core.contractId}</code>)</th>
+              <td><span class="badge ${
+                nm.contracts.core.deploymentStatus === "DEPLOYED_AND_INITIALIZED"
+                  ? "badge-ok"
+                  : "badge-sandbox"
+              }">${nm.contracts.core.deploymentStatus}</span>${
+                nm.contracts.core.deploymentStatus === "DEPLOYED_AND_INITIALIZED" && nm.contracts.core.viewQueryResult
+                  ? `<div class="mono" style="margin-top:4px;font-size:11px;color:#94a3b8;">
+                      code_hash: ${nm.contracts.core.codeHash}<br/>
+                      admin: ${nm.contracts.core.admin || "N/A"} | next_job_seq: ${nm.contracts.core.viewQueryResult.next_job_seq}<br/>
+                      vault_paused: <strong>${nm.contracts.core.viewQueryResult.vault_paused}</strong> | pool_paused: <strong>${nm.contracts.core.viewQueryResult.pool_paused}</strong>
+                    </div>`
+                  : ""
+              }</td>
+              <th>Audit Contract (<code>${nm.contracts.audit.contractId}</code>)</th>
+              <td><span class="badge ${
+                nm.contracts.audit.deploymentStatus === "DEPLOYED_AND_INITIALIZED"
+                  ? "badge-ok"
+                  : "badge-sandbox"
+              }">${nm.contracts.audit.deploymentStatus}</span></td>
+            </tr>
+            <tr>
+              <th>Production Core WASM</th>
+              <td class="mono">${nm.wasmArtifacts.core.sizeBytes.toLocaleString()} B (${nm.wasmArtifacts.core.storageStakeRequiredNear} NEAR storage)</td>
+              <th>Production Audit WASM</th>
+              <td class="mono">${nm.wasmArtifacts.audit.sizeBytes.toLocaleString()} B (${nm.wasmArtifacts.audit.storageStakeRequiredNear} NEAR storage)</td>
+            </tr>
+            <tr>
+              <th>Broadcast Safety Lock</th>
+              <td colspan="3" class="mono" style="color:#fbbf24;">${nm.broadcastGuardReason}</td>
+            </tr>
+          </tbody>
+        </table>
+        <div style="margin-top:12px;">
+          <table>
+            <thead>
+              <tr>
+                <th>Mainnet Account ID</th>
+                <th>Account Status</th>
+                <th>Native NEAR Balance</th>
+                <th>Mainnet USDC Balance</th>
+                <th>USDC NEP-145 Storage</th>
+              </tr>
+            </thead>
+            <tbody>${acctRows}</tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    async function syncNearMainnetStatus() {
+      try {
+        const res = await apiPost("/api/near/mainnet-status", {});
+        if (res.nearMainnet && res.nearMainnet.rpcReachable) {
+          showToast(`Synced live NEAR Mainnet RPC at block #${res.nearMainnet.latestBlockHeight}.`);
+        } else {
+          showToast("NEAR Mainnet RPC check completed.");
+        }
+      } catch (e) {
+        showToast("Error: " + e.message);
+      }
+    }
+
+    async function prepareMainnetEscrowTxFromForm() {
+      try {
+        const paymentUsd = Number(document.getElementById("cj-payment").value || "100");
+        const budgetUsd = Number(document.getElementById("cj-budget").value || "25");
+        const res = await apiPost("/api/near/prepare-tx", {
+          customerPaymentUsdcAtomic: String(Math.round(paymentUsd * 1e6)),
+          maxOperatingBudgetUsdcAtomic: String(Math.round(budgetUsd * 1e6)),
+          needsStorageRegistration: true,
+        });
+        const box = document.getElementById("cj-prepared-tx-box");
+        const pre = document.getElementById("cj-prepared-tx-json");
+        box.style.display = "block";
+        pre.textContent = JSON.stringify(res.prepared, null, 2);
+        showToast("Prepared unsigned NEP-141 ft_transfer_call escrow payload (broadcasting disabled).");
+      } catch (e) {
+        showToast("Error: " + e.message);
+      }
+    }
+
+    async function refreshOutlayerStatus() {
+      try {
+        const res = await apiPost("/api/outlayer/status", {});
+        if (res.outlayerWallet && res.outlayerWallet.authenticated) {
+          showToast(`Synced live OutLayer wallet ${res.outlayerWallet.walletId} (${res.outlayerWallet.network.toUpperCase()}).`);
+        } else {
+          showToast("OutLayer status synced (Mock fallback active).");
+        }
+      } catch (e) {
+        showToast("Error: " + e.message);
+      }
+    }
+
+    // ==================== PHASE 2: MAINNET WALLET & ESCROW FLOW ====================
+    let connectedMainnetWallet = null;
+    let walletSessionToken = null;
+
+    function loadSavedMainnetWallet() {
+      try {
+        const params = new URLSearchParams(window.location.search);
+        const errCode = params.get("errorCode");
+        if (errCode) {
+          showToast(`Wallet action rejected/cancelled (${errCode}).`);
+        }
+        const cbAccount = params.get("account_id");
+        if (cbAccount) {
+          document.getElementById("mn-wallet-account").value = cbAccount;
+          document.getElementById("mn-wallet-type").value = "mynearwallet";
+          verifyAndRenderCustomerWallet(cbAccount, "mynearwallet");
+          return;
+        }
+        const savedToken = sessionStorage.getItem("snowmoon_mainnet_wallet_token");
+        if (savedToken) {
+          walletSessionToken = savedToken;
+        }
+        const raw = sessionStorage.getItem("snowmoon_mainnet_wallet");
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && parsed.accountId && parsed.networkId === "mainnet") {
+            connectedMainnetWallet = parsed;
+            document.getElementById("mn-wallet-account").value = parsed.accountId;
+            document.getElementById("mn-wallet-type").value = parsed.walletType || "meteor";
+            verifyAndRenderCustomerWallet(parsed.accountId, parsed.walletType || "meteor");
+          }
+        }
+      } catch {}
+    }
+
+    async function connectMainnetWallet() {
+      try {
+        const walletType = document.getElementById("mn-wallet-type").value;
+        let accountId = (document.getElementById("mn-wallet-account").value || "").trim();
+
+        // Check injected Meteor / NEAR Wallet Selector provider if available
+        if (walletType === "meteor" && window.meteor && typeof window.meteor.requestSignIn === "function" && !accountId) {
+          await window.meteor.requestSignIn({ contract_id: "core.cryptozax.near" });
+          accountId = window.meteor.getAccountId ? window.meteor.getAccountId() : accountId;
+        } else if (walletType === "injected-selector" && window.near && typeof window.near.requestSignIn === "function" && !accountId) {
+          const res = await window.near.requestSignIn({ contractId: "core.cryptozax.near" });
+          accountId = (res && res.accountId) || accountId;
+        } else if (walletType === "mynearwallet" && !accountId) {
+          const cb = encodeURIComponent(window.location.href.split("?")[0]);
+          window.location.href = `https://app.mynearwallet.com/login/?contract_id=core.cryptozax.near&success_url=${cb}`;
+          return;
+        }
+
+        if (!accountId) {
+          showToast("Enter your NEAR Mainnet account ID (e.g. alice.near) or use an injected Meteor/Wallet Selector extension.");
+          return;
+        }
+        await verifyAndRenderCustomerWallet(accountId, walletType);
+      } catch (e) {
+        showToast("Wallet connect error: " + e.message);
+      }
+    }
+
+    async function verifyAndRenderCustomerWallet(accountId, walletType) {
+      const res = await apiPost("/api/near/wallet/verify", {
+        accountId,
+        networkId: "mainnet",
+        walletType,
+      });
+      connectedMainnetWallet = res.session;
+      walletSessionToken = res.walletSessionToken || null;
+      sessionStorage.setItem("snowmoon_mainnet_wallet", JSON.stringify(res.session));
+      if (walletSessionToken) {
+        sessionStorage.setItem("snowmoon_mainnet_wallet_token", walletSessionToken);
+      }
+      const badge = document.getElementById("mn-wallet-badge");
+      badge.className = "badge badge-ok";
+      badge.textContent = `CONNECTED: ${res.session.accountId} (MAINNET • ${res.session.walletType})`;
+
+      const cs = res.customerState;
+      const box = document.getElementById("mn-customer-state-box");
+      box.style.display = "block";
+      box.innerHTML = `
+        <table>
+          <tbody>
+            <tr>
+              <th>NEAR Balance</th>
+              <td class="mono">${cs.nearBalanceFormatted} NEAR</td>
+              <th>Mainnet USDC Balance</th>
+              <td class="mono">${cs.usdcBalanceFormatted}</td>
+            </tr>
+            <tr>
+              <th>USDC NEP-145 Storage</th>
+              <td><span class="badge ${cs.usdcStorageRegistered ? "badge-ok" : "badge-sandbox"}">${
+                cs.usdcStorageRegistered ? "REGISTERED" : "NEEDS 0.00125 NEAR"
+              }</span></td>
+              <th>Core Storage Credit</th>
+              <td class="mono">${cs.coreStorageCreditYocto} yocto (${
+                cs.needsCoreStorageDeposit ? `Shortfall: ${cs.coreStorageShortfallYocto} yocto` : "SUFFICIENT"
+              })</td>
+            </tr>
+            <tr>
+              <th>Core Vault / Pool</th>
+              <td class="mono">vault_paused=${cs.vaultPaused} | pool_paused=${cs.poolPaused}</td>
+              <th>Max Job Payment</th>
+              <td class="mono">$${(Number(cs.maxJobPaymentAtomic) / 1e6).toFixed(2)} USDC</td>
+            </tr>
+          </tbody>
+        </table>
+      `;
+      showToast(`Verified Mainnet wallet ${res.session.accountId}`);
+    }
+
+    function disconnectMainnetWallet() {
+      connectedMainnetWallet = null;
+      walletSessionToken = null;
+      sessionStorage.removeItem("snowmoon_mainnet_wallet");
+      sessionStorage.removeItem("snowmoon_mainnet_wallet_token");
+      const badge = document.getElementById("mn-wallet-badge");
+      badge.className = "badge badge-sandbox";
+      badge.textContent = "WALLET DISCONNECTED";
+      document.getElementById("mn-customer-state-box").style.display = "none";
+      showToast("Disconnected Mainnet wallet.");
+    }
+
+    async function prepareCustomerRegistrationFlow() {
+      try {
+        if (!connectedMainnetWallet) {
+          showToast("Connect a NEAR Mainnet customer wallet first.");
+          return;
+        }
+        const res = await apiPost("/api/near/prepare-registration", {
+          customerAccountId: connectedMainnetWallet.accountId,
+        });
+        const box = document.getElementById("mn-escrow-plan-box");
+        const pre = document.getElementById("mn-escrow-plan-json");
+        box.style.display = "block";
+        pre.textContent = JSON.stringify(res.plan, null, 2);
+        if (res.plan.alreadySatisfied) {
+          showToast("Customer is already registered on USDC & Core storage (no duplicate deposit needed).");
+        } else {
+          showToast(`Prepared ${res.plan.transactions.length} storage_deposit transaction(s) for wallet approval.`);
+        }
+      } catch (e) {
+        showToast("Error: " + e.message);
+      }
+    }
+
+    async function prepareAndFundMainnetJob() {
+      try {
+        if (!connectedMainnetWallet) {
+          showToast("Connect a NEAR Mainnet customer wallet first.");
+          return;
+        }
+        const paymentUsd = Number(document.getElementById("cj-payment").value || "1");
+        const budgetUsd = Number(document.getElementById("cj-budget").value || "0");
+        const res = await apiPost("/api/near/escrow/prepare-fund", {
+          customerAccountId: connectedMainnetWallet.accountId,
+          customerPaymentUsdcAtomic: String(Math.round(paymentUsd * 1e6)),
+          maxOperatingBudgetUsdcAtomic: String(Math.round(budgetUsd * 1e6)),
+        });
+        const box = document.getElementById("mn-escrow-plan-box");
+        const pre = document.getElementById("mn-escrow-plan-json");
+        box.style.display = "block";
+        pre.textContent = JSON.stringify(res, null, 2);
+        await refreshMainnetEscrowJobs();
+        if (!res.canBroadcastNow) {
+          showToast(res.blockedReason || "Live submission blocked because vault_paused=true.");
+          return;
+        }
+        // If vault is unpaused and an injected wallet is present, request wallet signature
+        const provider = window.meteor || window.near;
+        if (provider && typeof provider.signAndSendTransactions === "function") {
+          const outcomes = await provider.signAndSendTransactions({
+            transactions: res.record.preparedTransactions.map((t) => ({
+              receiverId: t.receiverId,
+              actions: t.actions.map((a) => ({
+                type: "FunctionCall",
+                params: {
+                  methodName: a.methodName,
+                  args: a.args,
+                  gas: a.gas,
+                  deposit: a.depositYocto,
+                },
+              })),
+            })),
+          });
+          const lastOutcome = Array.isArray(outcomes) ? outcomes[outcomes.length - 1] : outcomes;
+          const txHash = lastOutcome && (lastOutcome.transaction?.hash || lastOutcome.transaction_outcome?.id);
+          if (txHash) {
+            await apiPost("/api/near/escrow/submit-tx", {
+              intentId: res.record.intentId,
+              txHash,
+              customerAccountId: connectedMainnetWallet.accountId,
+            });
+            await reconcileMainnetEscrowTx(res.record.intentId, txHash, connectedMainnetWallet.accountId);
+          }
+        } else {
+          showToast("Escrow intent prepared; connect an injected Meteor/Wallet Selector extension to sign.");
+        }
+      } catch (e) {
+        showToast("Error: " + e.message);
+      }
+    }
+
+    async function reconcileMainnetEscrowTx(intentId, txHash, customerAccountId) {
+      try {
+        const res = await apiPost("/api/near/escrow/reconcile", {
+          intentId,
+          txHash,
+          customerAccountId,
+        });
+        await refreshMainnetEscrowJobs();
+        showToast(`Reconciled tx ${txHash.slice(0, 10)}… -> ${res.record.escrowState}`);
+      } catch (e) {
+        showToast("Reconcile error: " + e.message);
+      }
+    }
+
+    async function refreshMainnetEscrowJobs() {
+      try {
+        const res = await apiGet("/api/near/escrow/jobs");
+        const tbody = document.getElementById("mn-escrow-jobs-tbody");
+        if (!res.jobs || res.jobs.length === 0) {
+          tbody.innerHTML = `<tr><td colspan="8" style="color:var(--muted);">No Mainnet escrow intents recorded in this session yet.</td></tr>`;
+          return;
+        }
+        tbody.innerHTML = res.jobs.map((j) => `
+          <tr>
+            <td class="mono">${j.jobId ? j.jobId.slice(0, 14) + "…" : "(pending on-chain)"}</td>
+            <td class="mono">${j.customerAccountId}</td>
+            <td class="mono">$${(Number(j.amountAtomic) / 1e6).toFixed(2)} USDC</td>
+            <td><span class="badge ${j.escrowState === "FINAL_CONFIRMED" ? "badge-ok" : j.escrowState === "FAILED" ? "badge-danger" : "badge-sandbox"}">${j.escrowState}</span></td>
+            <td class="mono">${j.sourceTxHash ? `<a href="https://nearblocks.io/txns/${j.sourceTxHash}" target="_blank" style="color:#38bdf8;">${j.sourceTxHash.slice(0, 12)}…</a>` : "—"}</td>
+            <td class="mono">${j.finalExecutionStatus || "NOT_SUBMITTED"}</td>
+            <td style="font-size:12px;">${j.actionableError ? `<span style="color:#f87171;">${j.actionableError}</span>` : j.deliveryAndSettlementStatus}</td>
+            <td>${j.sourceTxHash ? `<button class="btn-secondary" style="padding:3px 8px;font-size:11px;" onclick="reconcileMainnetEscrowTx('${j.intentId}','${j.sourceTxHash}','${j.customerAccountId}')">↻ Reconcile</button>` : "—"}</td>
+          </tr>
+        `).join("");
+      } catch (e) {
+        showToast("Error loading Mainnet escrow jobs: " + e.message);
+      }
+    }
+
+    function escapeHtml(val) {
+      return String(val ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    async function registerWorkforceWorker() {
+      try {
+        const workerId = (document.getElementById("wf-reg-id").value || "worker-01").trim();
+        const accountId = (document.getElementById("wf-reg-account").value || "cryptozax.near").trim();
+        const capabilities = (document.getElementById("wf-reg-caps").value || "research,analysis").trim();
+        const res = await apiPost("/api/workforce/workers/register", {
+          workerId,
+          accountId,
+          displayName: workerId,
+          capabilities,
+          issueToken: true,
+        });
+        if (res.workerToken) {
+          sessionStorage.setItem(`snowmoon_worker_token_${workerId}`, res.workerToken);
+        }
+        showToast(`Registered worker ${workerId}`);
+        await refreshWorkforceDashboard();
+      } catch (e) {
+        showToast("Worker register error: " + e.message);
+      }
+    }
+
+    async function registerWorkforceJobUi() {
+      try {
+        const rawJobId = (document.getElementById("wf-job-id").value || "").trim();
+        const jobId = rawJobId || ("0x" + Array.from(crypto.getRandomValues(new Uint8Array(32))).map((b) => b.toString(16).padStart(2, "0")).join(""));
+        const requiredCapabilities = (document.getElementById("wf-job-caps").value || "research").trim();
+        const amountAtomic = (document.getElementById("wf-job-amount").value || "1000000").trim();
+        const prompt = (document.getElementById("wf-job-prompt").value || "").trim();
+        const customerAccountId = (connectedMainnetWallet && connectedMainnetWallet.accountId) || "cryptozax.near";
+        await apiPost("/api/workforce/jobs/register", {
+          jobId,
+          customerAccountId,
+          amountAtomic,
+          requiredCapabilities,
+          prompt,
+          funded: true,
+        });
+        showToast(`Registered workforce job ${jobId.slice(0, 12)}…`);
+        await refreshWorkforceDashboard();
+      } catch (e) {
+        showToast("Job register error: " + e.message);
+      }
+    }
+
+    async function assignWorkforceJobUi(jobId) {
+      try {
+        const disc = await apiGet(`/api/workforce/jobs/discover?jobId=${encodeURIComponent(jobId)}`);
+        const candidateId = disc.workers && disc.workers[0] ? disc.workers[0].workerId : undefined;
+        await apiPost("/api/workforce/jobs/assign", { jobId, workerId: candidateId });
+        showToast(`Assigned job ${jobId.slice(0, 12)}…`);
+        await refreshWorkforceDashboard();
+      } catch (e) {
+        showToast("Assign error: " + e.message);
+      }
+    }
+
+    async function reassignWorkforceJobUi(jobId) {
+      try {
+        await apiPost("/api/workforce/jobs/reassign", { jobId });
+        showToast(`Reassigned job ${jobId.slice(0, 12)}…`);
+        await refreshWorkforceDashboard();
+      } catch (e) {
+        showToast("Reassign error: " + e.message);
+      }
+    }
+
+    async function acceptWorkforceJobUi(jobId, workerId) {
+      try {
+        const wToken = sessionStorage.getItem(`snowmoon_worker_token_${workerId}`) || "";
+        const resp = await fetch("/api/workforce/jobs/accept", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            ...(wToken ? { "x-worker-token": wToken } : {}),
+          },
+          body: JSON.stringify({ jobId, workerId }),
+        });
+        const j = await resp.json();
+        if (!resp.ok || !j.ok) throw new Error(j.error || "Accept failed");
+        showToast(`Worker ${workerId} accepted ${jobId.slice(0, 12)}…`);
+        await refreshWorkforceDashboard();
+      } catch (e) {
+        showToast("Accept error: " + e.message);
+      }
+    }
+
+    async function executeWorkforceJobUi(jobId, workerId) {
+      try {
+        const wToken = sessionStorage.getItem(`snowmoon_worker_token_${workerId}`) || "";
+        const resp = await fetch("/api/workforce/jobs/execute", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            ...(wToken ? { "x-worker-token": wToken } : {}),
+          },
+          body: JSON.stringify({ jobId, workerId }),
+        });
+        const j = await resp.json();
+        if (!resp.ok || !j.ok) throw new Error(j.error || "Execute failed");
+        showToast(`Executed job ${jobId.slice(0, 12)}…`);
+        await refreshWorkforceDashboard();
+      } catch (e) {
+        showToast("Execution error: " + e.message);
+      }
+    }
+
+    async function verifyWorkforceJobUi(jobId, decision) {
+      try {
+        const verifierAccountId = (connectedMainnetWallet && connectedMainnetWallet.accountId) || "cryptozax.near";
+        await apiPost("/api/verification/verify", { jobId, verifierAccountId, decision });
+        showToast(`Job ${jobId.slice(0, 12)}… marked ${decision}`);
+        await refreshWorkforceDashboard();
+      } catch (e) {
+        showToast("Verification error: " + e.message);
+      }
+    }
+
+    async function prepareSettlementUi(jobId, kind = "PAYOUT_ACCEPT_DELIVERY") {
+      try {
+        const res = await apiPost("/api/settlement/prepare", { jobId, kind });
+        showToast(`Prepared unsigned ${kind} (${res.settlement.settlementId}).`);
+        await refreshWorkforceDashboard();
+      } catch (e) {
+        showToast("Settlement prep error: " + e.message);
+      }
+    }
+
+    async function refreshWorkforceDashboard() {
+      try {
+        const [wRes, jRes, vRes, sRes] = await Promise.all([
+          apiGet("/api/workforce/workers"),
+          apiGet("/api/workforce/jobs"),
+          apiGet("/api/verification/submissions"),
+          apiGet("/api/settlement/list"),
+        ]);
+        const wTbody = document.getElementById("wf-registry-tbody");
+        wTbody.innerHTML = (wRes.workers && wRes.workers.length)
+          ? wRes.workers.map((w) => `
+              <tr>
+                <td class="mono">${escapeHtml(w.workerId)}</td>
+                <td class="mono">${escapeHtml(w.accountId)}</td>
+                <td class="mono">${escapeHtml((w.capabilities || []).join(", "))}</td>
+                <td><span class="badge ${w.available ? "badge-ok" : "badge-sandbox"}">${w.available ? "AVAILABLE" : "PAUSED"}</span></td>
+                <td class="mono">${w.activeJobs} / ${w.completedJobs}</td>
+                <td class="mono">${escapeHtml(w.earningsAtomic)}</td>
+              </tr>
+            `).join("")
+          : `<tr><td colspan="6" style="color:var(--muted);">No workers registered yet.</td></tr>`;
+
+        const verByJob = new Map((vRes.submissions || []).map((s) => [s.jobId, s]));
+        const stlByJob = new Map((sRes.settlements || []).map((s) => [s.jobId, s]));
+        const jTbody = document.getElementById("wf-jobs-tbody");
+        jTbody.innerHTML = (jRes.jobs && jRes.jobs.length)
+          ? jRes.jobs.map((j) => {
+              const ver = verByJob.get(j.jobId);
+              const stl = stlByJob.get(j.jobId);
+              const teeBadge = j.outlayerAttestationVerified === true
+                ? `<span class="badge badge-ok">TEE VERIFIED</span>`
+                : j.outlayerStatus === "EXECUTION_FAILED" || j.outlayerStatus === "ATTESTATION_FAILED"
+                ? `<span class="badge badge-danger">${escapeHtml(j.outlayerStatus)}</span>`
+                : j.outlayerStatus
+                ? `<span class="badge badge-sandbox">${escapeHtml(j.outlayerStatus)}</span>`
+                : `<span class="badge badge-sandbox">NOT RUN</span>`;
+              const aiOutsideLabel = j.executionMode
+                ? `AI (Outside TEE): ${escapeHtml(j.executionMode)} (${escapeHtml(j.aiModel || "—")})`
+                : "AI (Outside TEE): —";
+              const teeDetail = j.outlayerCallId
+                ? `<div class="mono" style="font-size:11px;color:var(--muted);">call=${escapeHtml(j.outlayerCallId.slice(0, 12))}…${j.outlayerTaskId ? ` task=#${j.outlayerTaskId}` : ""}${j.outlayerComputeCostMicroUsd ? ` ($${(Number(j.outlayerComputeCostMicroUsd)/1e6).toFixed(4)})` : ""}</div>`
+                : "";
+              const evSummary = j.output && j.output.summary ? `<div style="font-size:11px;color:var(--muted);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(j.output.summary)}</div>` : "";
+              const anchorLine = ver && ver.anchorStatus && ver.anchorStatus !== "NONE"
+                ? `<div class="mono" style="font-size:11px;color:var(--muted);">Anchor: ${escapeHtml(ver.anchorStatus)}${ver.auditTxHash ? ` (${escapeHtml(ver.auditTxHash.slice(0, 10))}…)` : ""}</div>`
+                : "";
+              const stlLine = stl
+                ? `<span class="badge ${stl.status === "CONFIRMED" ? "badge-ok" : stl.status.startsWith("FAILED") ? "badge-danger" : "badge-sandbox"}">${escapeHtml(stl.status)}</span><div class="mono" style="font-size:11px;color:var(--muted);">${escapeHtml(stl.kind)}</div>`
+                : "—";
+              const errLine = j.lastError ? `<div style="font-size:11px;color:#f87171;max-width:180px;">${escapeHtml(j.lastError)}</div>` : "";
+              return `
+                <tr>
+                  <td class="mono">${escapeHtml(j.jobId.slice(0, 14))}…${j.escrowIntentId ? `<div style="font-size:11px;color:var(--muted);">escrow:${escapeHtml(j.escrowIntentId.slice(0,10))}</div>` : ""}</td>
+                  <td><span class="badge ${j.state === "FAILED" || j.state === "CANCELLED" ? "badge-danger" : j.state === "SETTLED" || j.state === "VERIFIED" ? "badge-ok" : "badge-info"}">${escapeHtml(j.state)}</span>${errLine}</td>
+                  <td class="mono">${escapeHtml(j.assignedWorkerId || "—")}</td>
+                  <td><div class="mono" style="font-size:11px;">${aiOutsideLabel}</div>${teeBadge}${teeDetail}</td>
+                  <td class="mono">${j.evidenceHash ? escapeHtml(j.evidenceHash.slice(0, 14)) + "…" : "—"}${evSummary}</td>
+                  <td class="mono">${ver ? escapeHtml(ver.verificationStatus) : "—"}${anchorLine}</td>
+                  <td>${stlLine}</td>
+                  <td style="display:flex;gap:4px;flex-wrap:wrap;">
+                    ${j.state === "FUNDED" ? `<button style="padding:2px 6px;font-size:11px;" onclick="assignWorkforceJobUi('${escapeHtml(j.jobId)}')">Discover &amp; Assign</button>` : ""}
+                    ${j.state === "ASSIGNED" && j.assignedWorkerId ? `<button style="padding:2px 6px;font-size:11px;" onclick="acceptWorkforceJobUi('${escapeHtml(j.jobId)}','${escapeHtml(j.assignedWorkerId)}')">Accept</button><button class="btn-secondary" style="padding:2px 6px;font-size:11px;" onclick="reassignWorkforceJobUi('${escapeHtml(j.jobId)}')">Reassign</button>` : ""}
+                    ${(j.state === "ACCEPTED" || j.state === "FAILED") && j.assignedWorkerId ? `<button style="padding:2px 6px;font-size:11px;" onclick="executeWorkforceJobUi('${escapeHtml(j.jobId)}','${escapeHtml(j.assignedWorkerId)}')">${j.state === "FAILED" ? "Retry" : "Execute"}</button>` : ""}
+                    ${j.state === "FAILED" ? `<button class="btn-secondary" style="padding:2px 6px;font-size:11px;" onclick="reassignWorkforceJobUi('${escapeHtml(j.jobId)}')">Reassign</button>` : ""}
+                    ${ver && ver.verificationStatus === "PENDING" ? `<button style="padding:2px 6px;font-size:11px;" onclick="verifyWorkforceJobUi('${escapeHtml(j.jobId)}','VERIFIED')">Accept Delivery</button><button class="btn-secondary" style="padding:2px 6px;font-size:11px;" onclick="verifyWorkforceJobUi('${escapeHtml(j.jobId)}','REJECTED')">Reject</button>` : ""}
+                    ${ver && ver.verificationStatus === "VERIFIED" && (!ver.anchorStatus || ver.anchorStatus === "NONE" || ver.anchorStatus === "FAILED") ? `<button class="btn-secondary" style="padding:2px 6px;font-size:11px;" onclick="prepareAuditAnchorUi('${escapeHtml(j.jobId)}')">Prep Anchor</button>` : ""}
+                    ${ver && (ver.anchorStatus === "SUBMITTED" || ver.anchorStatus === "PENDING") ? `<button class="btn-secondary" style="padding:2px 6px;font-size:11px;" onclick="reconcileAuditAnchorUi('${escapeHtml(j.jobId)}')">Reconcile Anchor</button>` : ""}
+                    ${ver && ver.verificationStatus === "VERIFIED" && !stl ? `<button class="btn-secondary" style="padding:2px 6px;font-size:11px;" onclick="prepareSettlementUi('${escapeHtml(j.jobId)}','PAYOUT_ACCEPT_DELIVERY')">Prep Payout</button>` : ""}
+                    ${ver && (ver.verificationStatus === "REJECTED" || ver.verificationStatus === "DISPUTED" || ver.verificationStatus === "EXPIRED") && !stl ? `<button class="btn-secondary" style="padding:2px 6px;font-size:11px;" onclick="prepareSettlementUi('${escapeHtml(j.jobId)}','CUSTOMER_REFUND')">Prep Refund</button>` : ""}
+                  </td>
+                </tr>
+              `;
+            }).join("")
+          : `<tr><td colspan="8" style="color:var(--muted);">No workforce jobs tracked yet.</td></tr>`;
+      } catch (e) {
+        showToast("Workforce refresh error: " + e.message);
+      }
+    }
+
+    async function discoverIntentsTokens() {
+      try {
+        const res = await apiGet("/api/intents/tokens");
+        const sel = document.getElementById("ni-origin-asset");
+        const usable = (res.tokens || []).slice(0, 80);
+        sel.innerHTML = usable.map((t) =>
+          `<option value="${t.assetId}">${t.blockchain.toUpperCase()} • ${t.symbol} (${t.decimals} dec)</option>`
+        ).join("");
+        showToast(`Loaded ${res.tokens.length} 1Click tokens; verified NEAR native USDC.`);
+      } catch (e) {
+        showToast("1Click tokens error: " + e.message);
+      }
+    }
+
+    async function requestIntentsDryQuote() {
+      try {
+        const originAsset = document.getElementById("ni-origin-asset").value;
+        const sourceWalletAddress = (document.getElementById("ni-source-wallet").value || "").trim();
+        const amountAtomic = (document.getElementById("ni-amount-atomic").value || "").trim();
+        const slippageToleranceBps = Number(document.getElementById("ni-slippage-bps").value || "100");
+        const customerNearAccount = (connectedMainnetWallet && connectedMainnetWallet.accountId) ||
+          (document.getElementById("mn-wallet-account").value || "").trim() || "cryptozax.near";
+        const res = await apiPost("/api/intents/quote", {
+          dry: true,
+          originAsset,
+          amountAtomic,
+          slippageToleranceBps,
+          customerNearAccount,
+          sourceWalletAddress: sourceWalletAddress || customerNearAccount,
+        });
+        const box = document.getElementById("ni-quote-box");
+        const pre = document.getElementById("ni-quote-json");
+        box.style.display = "block";
+        pre.textContent = JSON.stringify(res.quote, null, 2);
+        showToast("Fetched 1Click dry quote (no funds moved).");
+      } catch (e) {
+        showToast("Quote error: " + e.message);
+      }
+    }
+
+    async function pollIntentStatusUi(depositAddress) {
+      try {
+        await apiGet(`/api/intents/status?depositAddress=${encodeURIComponent(depositAddress)}`);
+        await refreshIntentsList();
+      } catch (e) {
+        showToast("Status poll error: " + e.message);
+      }
+    }
+
+    async function verifyIntentDestinationUi(depositAddress, expectedRecipient) {
+      try {
+        await apiPost("/api/intents/verify-destination", { depositAddress, expectedRecipient });
+        showToast("Destination USDC independently verified on NEAR Mainnet!");
+        await refreshIntentsList();
+      } catch (e) {
+        showToast("Destination verify error: " + e.message);
+      }
+    }
+
+    async function prepareSourceDepositUi(depositAddress) {
+      try {
+        const res = await apiPost("/api/intents/prepare-deposit", { depositAddress });
+        const box = document.getElementById("ni-escrow-bridge-box");
+        const pre = document.getElementById("ni-escrow-bridge-json");
+        box.style.display = "block";
+        pre.textContent = JSON.stringify(res.depositPlan, null, 2);
+        showToast("Prepared unsigned source-wallet deposit payload (" + res.depositPlan.walletAdapter + ").");
+      } catch (e) {
+        showToast("Prepare source deposit error: " + e.message);
+      }
+    }
+
+    async function signAndSubmitSourceDepositUi(depositAddress, customerNearAccount) {
+      try {
+        const res = await apiPost("/api/intents/prepare-deposit", { depositAddress });
+        const plan = res.depositPlan;
+        let txHash = "";
+        if (plan.walletAdapter === "evm_eip1193") {
+          if (!window.ethereum) throw new Error("No EVM wallet (window.ethereum) detected.");
+          const payload = plan.unsignedTransferPayload;
+          if (payload.method === "eth_sendTransaction") {
+            txHash = await window.ethereum.request(payload);
+          } else {
+            throw new Error("Use ERC-20 transfer via connected EVM wallet for " + plan.originAsset);
+          }
+        } else if (plan.walletAdapter === "solana_wallet_standard") {
+          const sol = window.solana;
+          if (!sol || !sol.signAndSendTransaction) throw new Error("No Solana wallet (window.solana) detected.");
+          const signed = await sol.signAndSendTransaction(plan.unsignedTransferPayload);
+          txHash = typeof signed === "string" ? signed : signed.signature;
+        } else {
+          throw new Error("Automatic signing not available for " + plan.walletAdapter + "; use Prepare Deposit.");
+        }
+        await apiPost("/api/intents/deposit-submit", {
+          depositAddress,
+          txHash,
+          customerNearAccount,
+        });
+        showToast("Source wallet signed & submitted txHash to 1Click!");
+        await refreshIntentsList();
+      } catch (e) {
+        showToast("Source wallet sign error: " + e.message);
+      }
+    }
+
+    async function prepareEscrowFromIntentUi(depositAddress, customerAccountId) {
+      try {
+        if (!connectedMainnetWallet || !connectedMainnetWallet.sessionToken) {
+          showToast("Connect and verify your Mainnet NEAR wallet first.");
+          return;
+        }
+        const res = await fetch("/api/intents/prepare-escrow", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-wallet-session": connectedMainnetWallet.sessionToken,
+          },
+          body: JSON.stringify({ depositAddress, customerAccountId }),
+        });
+        const j = await res.json();
+        if (!res.ok) throw new Error(j.error || "Prepare escrow failed");
+        const box = document.getElementById("ni-escrow-bridge-box");
+        const pre = document.getElementById("ni-escrow-bridge-json");
+        box.style.display = "block";
+        pre.textContent = JSON.stringify(j, null, 2);
+        showToast("Prepared unsigned Core ft_transfer_call escrow payload from verified intent.");
+      } catch (e) {
+        showToast("Prepare escrow error: " + e.message);
+      }
+    }
+
+    async function refreshLaunchReadinessUi() {
+      try {
+        const [healthRes, auditRes] = await Promise.all([
+          apiGet("/api/health"),
+          apiGet("/api/audit/readiness"),
+        ]);
+        const strip = document.getElementById("launch-readiness-strip");
+        if (!strip) return;
+        const db = healthRes.database || {};
+        const ai = healthRes.ai || {};
+        const ol = healthRes.outlayer || {};
+        const audit = auditRes.mainnet || {};
+        const wasm = auditRes.wasmArtifact || {};
+        strip.innerHTML =
+          `<strong>Database:</strong> ${db.backend || "json"} (${db.productionReady ? (db.rlsHardened ? "LIVE + RLS HARDENED" : "LIVE (RLS PENDING)") : "DEV / MIGRATION PENDING"}) • ` +
+          `<strong>AI:</strong> ${ai.authenticated && ai.modelAvailable ? "LIVE NEAR AI (" + ai.configuredModel + ")" : "MOCK (" + (ai.mode || "mock") + ")"} • ` +
+          `<strong>OutLayer:</strong> ${ol.readyForLiveExecution ? "LIVE CONFIGURED" : "MOCK FALLBACK (" + (ol.missingEnvVars || []).join(", ") + ")"} • ` +
+          `<strong>AuditAnchor:</strong> ${audit.auditAccountId || "audit.cryptozax.near"} ` +
+          `(${audit.auditAccountExists ? "DEPLOYED" : "NOT DEPLOYED"} | WASM ${wasm.bytes || 0}B | ` +
+          `Parent ${audit.parentNearBalance || "?"} NEAR / ${audit.requiredNearForDeployment || "2.00"} NEAR req)`;
+      } catch {}
+    }
+
+    async function refreshIntentsList() {
+      try {
+        const res = await apiGet("/api/intents/list");
+        const tbody = document.getElementById("ni-intents-tbody");
+        tbody.innerHTML = (res.intents && res.intents.length)
+          ? res.intents.map((i) => `
+              <tr>
+                <td class="mono">${i.intentId}</td>
+                <td class="mono">${i.sourceChain} → NEAR USDC</td>
+                <td class="mono">${i.depositAddress.slice(0, 14)}…</td>
+                <td><span class="badge badge-info">${i.lifecycleStage || i.status}</span></td>
+                <td class="mono">${i.expectedAmountOutAtomic} / ${i.receivedDeltaAtomic || "—"}</td>
+                <td><span class="badge ${i.destinationVerified ? "badge-ok" : "badge-sandbox"}">${i.destinationVerified ? "VERIFIED" : "UNVERIFIED"}</span></td>
+                <td style="display:flex;gap:4px;flex-wrap:wrap;">
+                  ${!i.sourceTxHash ? `<button class="btn-secondary" style="padding:2px 6px;font-size:11px;" onclick="prepareSourceDepositUi('${i.depositAddress}')">Prep Deposit</button><button style="padding:2px 6px;font-size:11px;" onclick="signAndSubmitSourceDepositUi('${i.depositAddress}','${i.customerNearAccount}')">Sign Deposit</button>` : ""}
+                  <button class="btn-secondary" style="padding:2px 6px;font-size:11px;" onclick="pollIntentStatusUi('${i.depositAddress}')">↻ Status</button>
+                  ${i.status === "SUCCESS" && !i.destinationVerified ? `<button style="padding:2px 6px;font-size:11px;" onclick="verifyIntentDestinationUi('${i.depositAddress}','${i.customerNearAccount}')">Verify USDC</button>` : ""}
+                  ${i.destinationVerified && !i.escrowIntentId ? `<button style="padding:2px 6px;font-size:11px;" onclick="prepareEscrowFromIntentUi('${i.depositAddress}','${i.customerNearAccount}')">Fund Escrow</button>` : ""}
+                </td>
+              </tr>
+            `).join("")
+          : `<tr><td colspan="7" style="color:var(--muted);">No NEAR Intents swaps tracked yet.</td></tr>`;
+      } catch {}
+    }
+
     fetchState();
+    loadSavedMainnetWallet();
+    refreshMainnetEscrowJobs();
+    refreshWorkforceDashboard();
+    refreshIntentsList();
+    refreshLaunchReadinessUi();
   </script>
 </body>
 </html>

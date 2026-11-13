@@ -37,12 +37,22 @@ export interface ExpenseReceipt {
   recordedAt: string;
 }
 
+export interface AITokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
 export interface AIExecutionRecord {
   jobId: string;
   workerId: string;
   adapterMode: "near_ai" | "mock";
   adapterLabel: string;
   model: string;
+  endpoint?: string;
+  requestId?: string;
+  tokenUsage?: AITokenUsage;
+  fallbackReason?: string;
   taskPrompt: string;
   summary: string;
   deliverableMarkdown: string;

@@ -1,6 +1,7 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { loadConfig, type SnowMoonConfig } from "./config.ts";
 import {
@@ -12,36 +13,220 @@ import {
   SnowMoonEngine,
 } from "./engine.ts";
 import { AIWorkerAdapter, OutLayerPolicyAdapter } from "./adapters.ts";
+import { NearMainnetRpcAdapter } from "./near_rpc.ts";
+import {
+  getCustomerMainnetState,
+  MainnetEscrowTracker,
+  prepareCustomerStorageRegistration,
+  verifyMainnetWalletSession,
+  WalletSessionManager,
+} from "./mainnet_escrow.ts";
+import { OutLayerExecutionAdapter, type OutLayerVerifyRunner } from "./outlayer.ts";
+import { WorkforceEngine } from "./workforce.ts";
+import { VerificationEngine } from "./verification.ts";
+import { SettlementEngine } from "./settlement.ts";
+import { SnowMoonRepository } from "./persistence.ts";
+import { NearIntentsClient } from "./near_intents.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+export const PRODUCTION_ROUTE_POLICY = {
+  sandboxOnlyBlockedInProduction: [
+    "/api/reset",
+    "/api/audit/anchor",
+    "/api/demo/*",
+    "/api/jobs/*",
+    "/api/float/*",
+  ],
+  productionAllowedRoutes: {
+    publicReadOnly: [
+      "/api/health",
+      "/api/metrics",
+      "/api/database/health",
+      "/api/state",
+      "/api/routes/policy",
+      "/api/audit/status",
+      "/api/audit/readiness",
+      "/api/ai/status",
+      "/api/near/mainnet-status",
+      "/api/near/account",
+      "/api/near/core-job",
+      "/api/near/core-storage",
+      "/api/near/tx-status",
+      "/api/near/customer-state",
+      "/api/near/escrow/jobs",
+      "/api/intents/tokens",
+      "/api/intents/list",
+      "/api/intents/status",
+      "/api/workforce/workers",
+      "/api/workforce/jobs",
+      "/api/workforce/jobs/discover",
+      "/api/verification/submissions",
+      "/api/settlement/list",
+      "/api/settlement/history",
+      "/api/outlayer/status",
+      "/api/outlayer/requests",
+      "/api/outlayer/config-status",
+      "/api/outlayer/verify-public",
+    ],
+    walletSessionAuthenticated: [
+      "/api/near/wallet/verify",
+      "/api/near/prepare-tx",
+      "/api/near/prepare-registration",
+      "/api/near/escrow/prepare-fund",
+      "/api/near/escrow/submit-tx",
+      "/api/near/escrow/reconcile",
+      "/api/near/float/prepare-deposit",
+      "/api/near/float/prepare-withdraw",
+      "/api/near/float/prepare-advance",
+      "/api/near/vault/prepare-start-work",
+      "/api/near/vault/prepare-submit-delivery",
+      "/api/near/vault/prepare-accept-delivery",
+      "/api/near/vault/prepare-refund",
+      "/api/intents/quote",
+      "/api/intents/prepare-deposit",
+      "/api/intents/deposit-submit",
+      "/api/intents/verify-destination",
+      "/api/intents/prepare-escrow",
+      "/api/workforce/workers/register",
+      "/api/workforce/jobs/register",
+      "/api/workforce/jobs/assign",
+      "/api/workforce/jobs/reassign",
+      "/api/workforce/jobs/cancel",
+      "/api/verification/submit",
+      "/api/verification/verify",
+      "/api/verification/prepare-audit-anchor",
+      "/api/verification/submit-audit-anchor",
+      "/api/verification/reconcile-audit-anchor",
+      "/api/verification/recover-anchors",
+      "/api/settlement/prepare",
+      "/api/settlement/submit-tx",
+      "/api/settlement/reconcile",
+      "/api/settlement/prepare-claim",
+      "/api/outlayer/execute",
+      "/api/outlayer/poll",
+      "/api/outlayer/verify-attestation",
+      "/api/approvals/decide",
+    ],
+    workerBearerAuthenticated: [
+      "/api/workforce/workers/availability",
+      "/api/workforce/jobs/accept",
+      "/api/workforce/jobs/execute",
+    ],
+  },
+} as const;
 
 export interface SnowMoonApp {
   config: SnowMoonConfig;
   engine: SnowMoonEngine;
   policyAdapter: OutLayerPolicyAdapter;
   aiAdapter: AIWorkerAdapter;
+  nearRpcAdapter: NearMainnetRpcAdapter;
+  escrowTracker: MainnetEscrowTracker;
+  walletSessionManager: WalletSessionManager;
+  repo: SnowMoonRepository;
+  intentsClient: NearIntentsClient;
+  outlayerExecAdapter: OutLayerExecutionAdapter;
+  workforceEngine: WorkforceEngine;
+  verificationEngine: VerificationEngine;
+  settlementEngine: SettlementEngine;
   server: http.Server;
+}
+
+const MAX_JSON_BODY_BYTES = 65_536; // 64 KB
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_MAX_MUTATION_REQUESTS = 120;
+const RATE_LIMIT_MAX_READ_REQUESTS = 1200;
+
+function sanitizeCorrelationId(raw?: string | string[]): string {
+  const val = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof val === "string" && /^[A-Za-z0-9_.\-]{8,64}$/.test(val.trim())) {
+    return val.trim();
+  }
+  return "req_" + crypto.randomBytes(8).toString("hex");
+}
+
+function logStructuredEvent(
+  level: "info" | "warn" | "error",
+  event: string,
+  details: Record<string, unknown>
+): void {
+  if (process.env.SNOWMOON_SILENT_LOGS === "true") return;
+  const safePayload = redactSensitiveText(
+    JSON.stringify({
+      ts: new Date().toISOString(),
+      level,
+      event,
+      ...details,
+    })
+  );
+  if (level === "error") {
+    console.error(safePayload);
+  } else if (level === "warn") {
+    console.warn(safePayload);
+  } else {
+    console.log(safePayload);
+  }
+}
+
+function redactSensitiveText(input: string): string {
+  return input
+    .replace(/ed25519:[A-Za-z0-9]{20,}/g, "ed25519:[REDACTED]")
+    .replace(/Bearer\s+[A-Za-z0-9._\-]+/gi, "Bearer [REDACTED]")
+    .replace(/sk-[A-Za-z0-9_\-]{12,}/g, "sk-[REDACTED]");
 }
 
 async function readJsonBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
+  let totalBytes = 0;
   for await (const chunk of req) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    totalBytes += buf.length;
+    if (totalBytes > MAX_JSON_BODY_BYTES) {
+      throw new Error(`ERR_PAYLOAD_TOO_LARGE: Request body exceeds ${MAX_JSON_BODY_BYTES} bytes.`);
+    }
+    chunks.push(buf);
   }
   const raw = Buffer.concat(chunks).toString("utf8").trim();
   if (!raw) return {};
   return JSON.parse(raw) as Record<string, unknown>;
 }
 
-function sendJson(res: http.ServerResponse, status: number, payload: unknown): void {
+function resolveAllowedOrigin(reqOrigin?: string, configuredOrigin?: string): string {
+  if (configuredOrigin && reqOrigin && reqOrigin === configuredOrigin) {
+    return reqOrigin;
+  }
+  if (reqOrigin && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(reqOrigin)) {
+    return reqOrigin;
+  }
+  return configuredOrigin || "http://127.0.0.1:8787";
+}
+
+function sendJson(
+  res: http.ServerResponse,
+  status: number,
+  payload: unknown,
+  reqOrigin?: string,
+  configuredOrigin?: string,
+  correlationId?: string
+): void {
   const body = JSON.stringify(payload, null, 2);
-  res.writeHead(status, {
+  const headers: Record<string, string> = {
     "Content-Type": "application/json; charset=utf-8",
-    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Origin": resolveAllowedOrigin(reqOrigin, configuredOrigin),
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
-  });
+    "Access-Control-Allow-Headers": "Content-Type, x-wallet-session, x-worker-token, x-request-id, Authorization",
+    "Vary": "Origin",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Cache-Control": "no-store",
+  };
+  if (correlationId) {
+    headers["X-Request-Id"] = correlationId;
+  }
+  res.writeHead(status, headers);
   res.end(body);
 }
 
@@ -49,7 +234,9 @@ export function buildSystemSnapshot(
   config: SnowMoonConfig,
   engine: SnowMoonEngine,
   policyAdapter: OutLayerPolicyAdapter,
-  aiAdapter: AIWorkerAdapter
+  aiAdapter: AIWorkerAdapter,
+  nearRpcAdapter?: NearMainnetRpcAdapter,
+  verificationEngine?: VerificationEngine
 ) {
   const jobs = Array.from(engine.jobs.values()).sort((a, b) => b.seq - a.seq);
   const advances = Array.from(engine.advances.values()).sort(
@@ -83,11 +270,24 @@ export function buildSystemSnapshot(
       network: config.network,
       chainMode: config.chainMode,
       nearRpcUrl: config.nearRpcUrl,
+      nearMainnetRpcUrl: config.nearMainnetRpcUrl,
+      mainnetUsdcContractId: config.mainnetUsdcContractId,
+      mainnetCoreContractId: config.mainnetCoreContractId,
+      mainnetAuditContractId: config.mainnetAuditContractId,
+      mainnetAdminAccountId: config.mainnetAdminAccountId,
+      mainnetOperatorAccountId: config.mainnetOperatorAccountId,
+      mainnetAuditOperatorAccountId: config.mainnetAuditOperatorAccountId,
+      liveTxBroadcastingEnabled: config.liveTxBroadcastingEnabled,
+      isProductionMode: config.isProductionMode,
+      allowSandboxDemoEndpoints: config.allowSandboxDemoEndpoints,
       coreContractId: config.coreContractId,
       auditContractId: config.auditContractId,
       usdcContractId: config.usdcContractId,
       aiMode: config.aiMode,
       aiAdapterLabel: aiAdapter.getAdapterLabel(),
+      nearAiBaseUrl: config.nearAiBaseUrl,
+      nearAiModel: config.nearAiModel,
+      hasNearAiKey: config.hasNearAiKey,
       walletMode: config.walletMode,
       walletAdapterLabel: policyAdapter.getAdapterLabel(),
       autoApproveLimitUsdc: config.autoApproveLimitUsdc.toString(),
@@ -133,40 +333,1449 @@ export function buildSystemSnapshot(
       creditLineMultiplierBps: engine.creditLineMultiplierBps.toString(),
       lpSharesByAccount: shares,
     },
+    outlayerWallet: policyAdapter.getCachedWalletSnapshot(),
+    nearMainnet: nearRpcAdapter ? nearRpcAdapter.getCachedStatus() : null,
     balancesUsdc: balances,
     jobs,
     advances,
     approvals,
     anchors,
+    verifications: verificationEngine ? verificationEngine.listSubmissions() : [],
     events: engine.events.slice(0, 60),
   };
 }
 
-export function createSnowMoonApp(customConfig?: SnowMoonConfig): SnowMoonApp {
+export function createSnowMoonApp(
+  customConfig?: SnowMoonConfig,
+  deps?: {
+    outlayerFetch?: typeof fetch;
+    outlayerVerifyRunner?: OutLayerVerifyRunner;
+  }
+): SnowMoonApp {
   const config = customConfig ?? loadConfig();
   const engine = new SnowMoonEngine(config);
   const policyAdapter = new OutLayerPolicyAdapter(config, engine);
   const aiAdapter = new AIWorkerAdapter(config);
+  const nearRpcAdapter = new NearMainnetRpcAdapter(config);
+  const walletSessionManager = new WalletSessionManager();
+  const repo = SnowMoonRepository.fromConfig(config);
+  const escrowTracker = new MainnetEscrowTracker(repo);
+  const intentsClient = new NearIntentsClient(config, fetch, repo);
+  const outlayerExecAdapter = new OutLayerExecutionAdapter(
+    config,
+    deps?.outlayerFetch ?? fetch,
+    repo,
+    deps?.outlayerVerifyRunner
+  );
+  const workforceEngine = new WorkforceEngine(repo);
+  const verificationEngine = new VerificationEngine(repo);
+  const settlementEngine = new SettlementEngine(repo);
+  const nearRateBuckets = new Map<string, number[]>();
+  const startedAtMs = Date.now();
+  const metrics = {
+    requestsTotal: 0,
+    errors4xx: 0,
+    errors5xx: 0,
+    rateLimited: 0,
+  };
 
   const publicDir = path.resolve(__dirname, "..", "public");
 
   const server = http.createServer(async (req, res) => {
+    const reqOrigin = typeof req.headers.origin === "string" ? req.headers.origin : undefined;
+    const correlationId = sanitizeCorrelationId(req.headers["x-request-id"]);
+    res.setHeader("X-Request-Id", correlationId);
+    metrics.requestsTotal += 1;
     try {
       const method = req.method || "GET";
       const parsedUrl = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
       const pathname = parsedUrl.pathname;
 
       if (method === "OPTIONS") {
-        sendJson(res, 200, { ok: true });
+        sendJson(res, 200, { ok: true }, reqOrigin, undefined, correlationId);
         return;
+      }
+
+      const getWalletToken = (): string | undefined =>
+        typeof req.headers["x-wallet-session"] === "string"
+          ? req.headers["x-wallet-session"]
+          : undefined;
+      const getWorkerToken = (): string =>
+        typeof req.headers["x-worker-token"] === "string" ? req.headers["x-worker-token"] : "";
+      const isOperatorOrAdminAccount = (accountId: string): boolean =>
+        [
+          config.mainnetOperatorAccountId,
+          config.mainnetAdminAccountId,
+          config.mainnetAuditOperatorAccountId,
+          config.operatorAccountId,
+          config.adminAccountId,
+        ]
+          .filter(Boolean)
+          .includes(accountId);
+      const assertOperatorOrAdminSession = (): string => {
+        const token = getWalletToken();
+        if (!token || !token.trim()) {
+          throw new Error(
+            "ERR_WALLET_AUTH_REQUIRED: Missing x-wallet-session token for operator/admin action."
+          );
+        }
+        const session = walletSessionManager.verifyToken(token);
+        if (!isOperatorOrAdminAccount(session.accountId)) {
+          throw new Error(
+            `ERR_ACCOUNT_IMPERSONATION_BLOCKED: Wallet ${session.accountId} is not an authorized operator or admin.`
+          );
+        }
+        return session.accountId;
+      };
+      const assertCustomerOrOperatorSession = (customerAccountId?: string): string => {
+        const token = getWalletToken();
+        if (!token || !token.trim()) {
+          throw new Error(
+            "ERR_WALLET_AUTH_REQUIRED: Missing x-wallet-session token. Connect and verify your Mainnet wallet first."
+          );
+        }
+        const session = walletSessionManager.verifyToken(token);
+        if (
+          customerAccountId &&
+          session.accountId !== customerAccountId &&
+          !isOperatorOrAdminAccount(session.accountId)
+        ) {
+          throw new Error(
+            `ERR_ACCOUNT_IMPERSONATION_BLOCKED: Authenticated wallet ${session.accountId} cannot act for ${customerAccountId}.`
+          );
+        }
+        return session.accountId;
+      };
+
+      if (pathname.startsWith("/api/")) {
+        const ip = req.socket.remoteAddress || "unknown";
+        const isReadMethod = method === "GET" || method === "HEAD";
+        const bucketKey = `${ip}:${isReadMethod ? "read" : "write"}`;
+        const maxRequests = isReadMethod
+          ? RATE_LIMIT_MAX_READ_REQUESTS
+          : RATE_LIMIT_MAX_MUTATION_REQUESTS;
+        const now = Date.now();
+        if (nearRateBuckets.size > 5000) {
+          for (const [key, timestamps] of nearRateBuckets.entries()) {
+            const active = timestamps.filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
+            if (active.length === 0) nearRateBuckets.delete(key);
+            else nearRateBuckets.set(key, active);
+          }
+        }
+        const recent = (nearRateBuckets.get(bucketKey) || []).filter(
+          (t) => now - t < RATE_LIMIT_WINDOW_MS
+        );
+        if (recent.length >= maxRequests) {
+          metrics.rateLimited += 1;
+          metrics.errors4xx += 1;
+          logStructuredEvent("warn", "rate_limited", {
+            correlationId,
+            method,
+            pathname,
+            bucket: isReadMethod ? "read" : "write",
+          });
+          sendJson(
+            res,
+            429,
+            { ok: false, error: "ERR_RATE_LIMITED: Too many API requests. Retry in 60s." },
+            reqOrigin,
+            undefined,
+            correlationId
+          );
+          return;
+        }
+        recent.push(now);
+        nearRateBuckets.set(bucketKey, recent);
       }
 
       // 1. Health & full state snapshot
       if (method === "GET" && pathname === "/api/state") {
+        if (
+          config.walletMode === "outlayer" &&
+          config.hasOutlayerKey &&
+          !policyAdapter.getCachedWalletSnapshot().authenticated
+        ) {
+          await policyAdapter.syncLiveWalletStatus();
+        }
         sendJson(
           res,
           200,
-          buildSystemSnapshot(config, engine, policyAdapter, aiAdapter)
+          buildSystemSnapshot(config, engine, policyAdapter, aiAdapter, nearRpcAdapter, verificationEngine)
+        );
+        return;
+      }
+
+      // 1b. Read-only live OutLayer wallet & policy status check (GET or POST)
+      if ((method === "GET" || method === "POST") && pathname === "/api/outlayer/status") {
+        const snapshot = await policyAdapter.syncLiveWalletStatus();
+        sendJson(res, 200, {
+          ok: true,
+          outlayerWallet: snapshot,
+          state: buildSystemSnapshot(config, engine, policyAdapter, aiAdapter, nearRpcAdapter),
+        });
+        return;
+      }
+
+      // 1c. Read-only live NEAR Mainnet RPC & contract deployment status check (GET or POST)
+      if ((method === "GET" || method === "POST") && pathname === "/api/near/mainnet-status") {
+        const extraAccount = parsedUrl.searchParams.get("accountId") || undefined;
+        const nearMainnet = await nearRpcAdapter.syncMainnetStatus(extraAccount);
+        sendJson(res, 200, {
+          ok: true,
+          nearMainnet,
+          state: buildSystemSnapshot(config, engine, policyAdapter, aiAdapter, nearRpcAdapter),
+        });
+        return;
+      }
+
+      // 1d. Read-only NEAR Mainnet account & USDC balance/registration inspector
+      if (method === "GET" && pathname === "/api/near/account") {
+        const accountId =
+          parsedUrl.searchParams.get("accountId") || config.mainnetAdminAccountId;
+        const accountState = await nearRpcAdapter.inspectMainnetAccount(accountId);
+        sendJson(res, 200, {
+          ok: true,
+          accountState,
+        });
+        return;
+      }
+
+      // 1e. Unsigned transaction payload preparation for NEP-141 USDC escrow (ft_transfer_call) & SnowMoon Core
+      if (method === "POST" && pathname === "/api/near/prepare-tx") {
+        const body = await readJsonBody(req);
+        if (config.isProductionMode || getWalletToken()) {
+          assertCustomerOrOperatorSession(
+            body.customerAccountId ? String(body.customerAccountId) : undefined
+          );
+        }
+        const prepared = nearRpcAdapter.prepareUsdcEscrowAndJobPayloads({
+          customerAccountId: body.customerAccountId
+            ? String(body.customerAccountId)
+            : undefined,
+          operatorAccountId: body.operatorAccountId
+            ? String(body.operatorAccountId)
+            : undefined,
+          coreContractId: body.coreContractId
+            ? String(body.coreContractId)
+            : undefined,
+          usdcContractId: body.usdcContractId
+            ? String(body.usdcContractId)
+            : undefined,
+          customerPaymentUsdcAtomic: body.customerPaymentUsdcAtomic
+            ? String(body.customerPaymentUsdcAtomic)
+            : undefined,
+          maxOperatingBudgetUsdcAtomic: body.maxOperatingBudgetUsdcAtomic
+            ? String(body.maxOperatingBudgetUsdcAtomic)
+            : undefined,
+          termsHash: body.termsHash ? String(body.termsHash) : undefined,
+          deadlineSec: body.deadlineSec ? Number(body.deadlineSec) : undefined,
+          jobId: body.jobId ? String(body.jobId) : undefined,
+          needsStorageRegistration:
+            body.needsStorageRegistration !== undefined
+              ? Boolean(body.needsStorageRegistration)
+              : true,
+        });
+        sendJson(res, 200, {
+          ok: true,
+          prepared,
+        });
+        return;
+      }
+
+      // 1f. Read-only Core contract job lookup
+      if (method === "GET" && pathname === "/api/near/core-job") {
+        const jobId = parsedUrl.searchParams.get("jobId") || "";
+        const coreContractId =
+          parsedUrl.searchParams.get("coreContractId") || config.mainnetCoreContractId;
+        const job = await nearRpcAdapter.queryCoreJob(jobId, coreContractId);
+        sendJson(res, 200, {
+          ok: true,
+          mode: "MAINNET_READ_ONLY",
+          coreContractId,
+          jobId,
+          result: job,
+        });
+        return;
+      }
+
+      // 1g. Read-only Core contract storage credit lookup
+      if (method === "GET" && pathname === "/api/near/core-storage") {
+        const accountId =
+          parsedUrl.searchParams.get("accountId") || config.mainnetAdminAccountId;
+        const coreContractId =
+          parsedUrl.searchParams.get("coreContractId") || config.mainnetCoreContractId;
+        const storage = await nearRpcAdapter.queryCoreStorageCredit(
+          accountId,
+          coreContractId
+        );
+        sendJson(res, 200, {
+          ok: true,
+          mode: "MAINNET_READ_ONLY",
+          coreContractId,
+          accountId,
+          storage,
+        });
+        return;
+      }
+
+      // 1h. Read-only Mainnet transaction status lookup (EXPERIMENTAL_tx_status)
+      if (method === "GET" && pathname === "/api/near/tx-status") {
+        const txHash = parsedUrl.searchParams.get("txHash") || "";
+        const senderId =
+          parsedUrl.searchParams.get("senderId") || config.mainnetAdminAccountId;
+        const txStatus = await nearRpcAdapter.queryTransactionStatus(txHash, senderId);
+        sendJson(res, 200, {
+          ok: true,
+          mode: "MAINNET_READ_ONLY",
+          txHash,
+          senderId,
+          txStatus,
+        });
+        return;
+      }
+
+      // 1i. Customer Wallet Mainnet session verification & live USDC/Core state
+      if (method === "POST" && pathname === "/api/near/wallet/verify") {
+        const body = await readJsonBody(req);
+        const session = verifyMainnetWalletSession({
+          accountId: String(body.accountId || ""),
+          networkId: String(body.networkId || ""),
+          walletType: String(body.walletType || ""),
+          privateKey: body.privateKey,
+        });
+        const walletSessionToken = walletSessionManager.issueToken(session);
+        const customerState = await getCustomerMainnetState(
+          nearRpcAdapter,
+          config,
+          session.accountId
+        );
+        sendJson(res, 200, {
+          ok: true,
+          session,
+          walletSessionToken,
+          customerState,
+        }, reqOrigin);
+        return;
+      }
+
+      // 1j. Read-only customer USDC & Core storage state
+      if (method === "GET" && pathname === "/api/near/customer-state") {
+        const accountId = parsedUrl.searchParams.get("accountId") || "";
+        const customerState = await getCustomerMainnetState(
+          nearRpcAdapter,
+          config,
+          accountId
+        );
+        sendJson(res, 200, {
+          ok: true,
+          customerState,
+        }, reqOrigin);
+        return;
+      }
+
+      // 1k. Prepare only missing USDC & Core storage_deposit transactions
+      if (method === "POST" && pathname === "/api/near/prepare-registration") {
+        const body = await readJsonBody(req);
+        const customerAccountId = String(body.customerAccountId || "");
+        const token =
+          typeof req.headers["x-wallet-session"] === "string"
+            ? req.headers["x-wallet-session"]
+            : undefined;
+        walletSessionManager.assertAuthorizedCustomer(token, customerAccountId);
+        const plan = await prepareCustomerStorageRegistration(
+          nearRpcAdapter,
+          config,
+          customerAccountId
+        );
+        sendJson(res, 200, {
+          ok: true,
+          plan,
+        }, reqOrigin);
+        return;
+      }
+
+      // 1l. Prepare real Mainnet NEP-141 CreateAndFundJob escrow intent
+      if (method === "POST" && pathname === "/api/near/escrow/prepare-fund") {
+        const body = await readJsonBody(req);
+        const customerAccountId = String(body.customerAccountId || "");
+        const token =
+          typeof req.headers["x-wallet-session"] === "string"
+            ? req.headers["x-wallet-session"]
+            : undefined;
+        walletSessionManager.assertAuthorizedCustomer(token, customerAccountId);
+        const result = await escrowTracker.prepareFundJob(nearRpcAdapter, config, {
+          customerAccountId,
+          operatorAccountId: body.operatorAccountId
+            ? String(body.operatorAccountId)
+            : undefined,
+          customerPaymentUsdcAtomic: String(body.customerPaymentUsdcAtomic || ""),
+          maxOperatingBudgetUsdcAtomic: String(
+            body.maxOperatingBudgetUsdcAtomic || "0"
+          ),
+          termsHash: String(
+            body.termsHash ||
+              "0xd8a2a66c36307e760125edcea6a9867891c4d19ef472e5a52e3db1583b3e14de"
+          ),
+          deadlineSec:
+            body.deadlineSec !== undefined
+              ? Number(body.deadlineSec)
+              : Math.floor(Date.now() / 1000) + 86400,
+          clientNonce: body.clientNonce ? String(body.clientNonce) : undefined,
+        });
+        sendJson(res, 200, {
+          ok: true,
+          ...result,
+        }, reqOrigin);
+        return;
+      }
+
+      // 1m. Record wallet-signed Mainnet transaction hash (prevents replay / blind retry)
+      if (method === "POST" && pathname === "/api/near/escrow/submit-tx") {
+        const body = await readJsonBody(req);
+        const customerAccountId = String(body.customerAccountId || "");
+        const token =
+          typeof req.headers["x-wallet-session"] === "string"
+            ? req.headers["x-wallet-session"]
+            : undefined;
+        walletSessionManager.assertAuthorizedCustomer(token, customerAccountId);
+        const record = escrowTracker.submitSignedTransaction({
+          intentId: String(body.intentId || ""),
+          txHash: String(body.txHash || ""),
+          customerAccountId,
+        });
+        sendJson(res, 200, {
+          ok: true,
+          record,
+        }, reqOrigin);
+        return;
+      }
+
+      // 1n. Reconcile Mainnet transaction hash & on-chain Core job state
+      if (method === "POST" && pathname === "/api/near/escrow/reconcile") {
+        const body = await readJsonBody(req);
+        if (config.isProductionMode || getWalletToken()) {
+          assertCustomerOrOperatorSession(
+            body.customerAccountId ? String(body.customerAccountId) : undefined
+          );
+        }
+        const record = await escrowTracker.reconcileTransaction(nearRpcAdapter, {
+          intentId: body.intentId ? String(body.intentId) : undefined,
+          txHash: String(body.txHash || ""),
+          customerAccountId: String(body.customerAccountId || ""),
+        });
+        let workforceJob = null;
+        if (record.escrowState === "FINAL_CONFIRMED" && record.jobId) {
+          workforceJob = workforceEngine.registerJob({
+            jobId: record.jobId,
+            customerAccountId: record.customerAccountId,
+            tenantId: record.customerAccountId,
+            escrowIntentId: record.intentId,
+            amountAtomic: record.amountAtomic,
+            requiredCapabilities: Array.isArray(body.requiredCapabilities)
+              ? body.requiredCapabilities.map(String)
+              : ["research"],
+            prompt:
+              typeof body.prompt === "string" && body.prompt.trim()
+                ? body.prompt.trim()
+                : `Mainnet escrow job ${record.jobId} (terms ${record.termsHash})`,
+            deadlineSec: record.deadlineSec,
+            funded: true,
+          });
+        }
+        sendJson(res, 200, {
+          ok: true,
+          record,
+          workforceJob,
+        }, reqOrigin);
+        return;
+      }
+
+      // 1o. List tracked Mainnet escrow jobs
+      if (method === "GET" && pathname === "/api/near/escrow/jobs") {
+        sendJson(res, 200, {
+          ok: true,
+          jobs: escrowTracker.listRecords(),
+        }, reqOrigin);
+        return;
+      }
+
+      // 1p. Production Mainnet FloatPool & Vault unsigned transaction builders
+      if (method === "POST" && pathname === "/api/near/float/prepare-deposit") {
+        const body = await readJsonBody(req);
+        const lpAccountId = String(body.lpAccountId || "");
+        const token =
+          typeof req.headers["x-wallet-session"] === "string"
+            ? req.headers["x-wallet-session"]
+            : undefined;
+        walletSessionManager.assertAuthorizedCustomer(token, lpAccountId);
+        const tx = nearRpcAdapter.prepareFloatPoolDepositPayload({
+          lpAccountId,
+          amountUsdcAtomic: String(body.amountUsdcAtomic || ""),
+          receiverAccountId: body.receiverAccountId ? String(body.receiverAccountId) : undefined,
+        });
+        sendJson(res, 200, { ok: true, transaction: tx }, reqOrigin, config.corsAllowedOrigin);
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/near/float/prepare-withdraw") {
+        const body = await readJsonBody(req);
+        const lpAccountId = String(body.lpAccountId || "");
+        const token =
+          typeof req.headers["x-wallet-session"] === "string"
+            ? req.headers["x-wallet-session"]
+            : undefined;
+        walletSessionManager.assertAuthorizedCustomer(token, lpAccountId);
+        const tx = nearRpcAdapter.prepareFloatPoolWithdrawPayload({
+          lpAccountId,
+          amountUsdcAtomic: String(body.amountUsdcAtomic || ""),
+          receiverAccountId: body.receiverAccountId ? String(body.receiverAccountId) : undefined,
+        });
+        sendJson(res, 200, { ok: true, transaction: tx }, reqOrigin, config.corsAllowedOrigin);
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/near/vault/prepare-accept-delivery") {
+        const body = await readJsonBody(req);
+        const customerAccountId = String(body.customerAccountId || "");
+        const token =
+          typeof req.headers["x-wallet-session"] === "string"
+            ? req.headers["x-wallet-session"]
+            : undefined;
+        walletSessionManager.assertAuthorizedCustomer(token, customerAccountId);
+        const tx = nearRpcAdapter.prepareVaultAcceptDeliveryPayload({
+          customerAccountId,
+          jobId: String(body.jobId || ""),
+        });
+        sendJson(res, 200, { ok: true, transaction: tx }, reqOrigin, config.corsAllowedOrigin);
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/near/vault/prepare-refund") {
+        const body = await readJsonBody(req);
+        const customerAccountId = String(body.customerAccountId || "");
+        const token =
+          typeof req.headers["x-wallet-session"] === "string"
+            ? req.headers["x-wallet-session"]
+            : undefined;
+        walletSessionManager.assertAuthorizedCustomer(token, customerAccountId);
+        const tx = nearRpcAdapter.prepareVaultRefundPayload({
+          customerAccountId,
+          jobId: String(body.jobId || ""),
+        });
+        sendJson(res, 200, { ok: true, transaction: tx }, reqOrigin, config.corsAllowedOrigin);
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/near/float/prepare-advance") {
+        const body = await readJsonBody(req);
+        const operatorAccountId = String(body.operatorAccountId || "");
+        walletSessionManager.assertAuthorizedCustomer(getWalletToken(), operatorAccountId);
+        const tx = nearRpcAdapter.prepareFloatPoolRequestAdvancePayload({
+          operatorAccountId,
+          jobId: String(body.jobId || ""),
+          expectedPrincipalAtomic: String(body.expectedPrincipalAtomic || ""),
+        });
+        sendJson(res, 200, { ok: true, transaction: tx }, reqOrigin, config.corsAllowedOrigin);
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/near/vault/prepare-start-work") {
+        const body = await readJsonBody(req);
+        const operatorAccountId = String(body.operatorAccountId || "");
+        walletSessionManager.assertAuthorizedCustomer(getWalletToken(), operatorAccountId);
+        const tx = nearRpcAdapter.prepareVaultStartWorkPayload({
+          operatorAccountId,
+          jobId: String(body.jobId || ""),
+        });
+        sendJson(res, 200, { ok: true, transaction: tx }, reqOrigin, config.corsAllowedOrigin);
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/near/vault/prepare-submit-delivery") {
+        const body = await readJsonBody(req);
+        const operatorAccountId = String(body.operatorAccountId || "");
+        walletSessionManager.assertAuthorizedCustomer(getWalletToken(), operatorAccountId);
+        const tx = nearRpcAdapter.prepareVaultSubmitDeliveryPayload({
+          operatorAccountId,
+          jobId: String(body.jobId || ""),
+          deliveryHash: String(body.deliveryHash || ""),
+        });
+        sendJson(res, 200, { ok: true, transaction: tx }, reqOrigin, config.corsAllowedOrigin);
+        return;
+      }
+
+      // ── PHASE 3: WORKFORCE EXECUTION ENGINE ───────────────────────────────
+      if (method === "GET" && pathname === "/api/workforce/workers") {
+        sendJson(res, 200, { ok: true, workers: workforceEngine.listWorkers() }, reqOrigin);
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/workforce/workers/register") {
+        const body = await readJsonBody(req);
+        if (config.isProductionMode || getWalletToken()) {
+          assertOperatorOrAdminSession();
+        }
+        const worker = workforceEngine.registerWorker({
+          workerId: String(body.workerId || ""),
+          accountId: String(body.accountId || ""),
+          displayName: String(body.displayName || ""),
+          capabilities: Array.isArray(body.capabilities)
+            ? body.capabilities.map(String)
+            : String(body.capabilities || "").split(","),
+          maxConcurrentJobs: body.maxConcurrentJobs ? Number(body.maxConcurrentJobs) : 3,
+        });
+        const workerToken =
+          body.issueToken === true ? workforceEngine.issueWorkerToken(worker.workerId) : undefined;
+        sendJson(res, 200, { ok: true, worker, ...(workerToken ? { workerToken } : {}) }, reqOrigin);
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/workforce/workers/availability") {
+        const body = await readJsonBody(req);
+        const workerId = String(body.workerId || "");
+        const headerToken = getWorkerToken();
+        if (config.isProductionMode && !headerToken) {
+          throw new Error("ERR_WORKER_AUTH_REQUIRED: Missing x-worker-token.");
+        }
+        if (config.isProductionMode || headerToken) {
+          workforceEngine.assertWorkerAuthorized(workerId, headerToken);
+        }
+        const worker = workforceEngine.setWorkerAvailability(
+          workerId,
+          Boolean(body.available)
+        );
+        sendJson(res, 200, { ok: true, worker }, reqOrigin);
+        return;
+      }
+
+      if (method === "GET" && pathname === "/api/workforce/jobs") {
+        sendJson(res, 200, { ok: true, jobs: workforceEngine.listJobs() }, reqOrigin);
+        return;
+      }
+
+      if (method === "GET" && pathname === "/api/workforce/jobs/discover") {
+        const jobId = parsedUrl.searchParams.get("jobId") || "";
+        const workers = workforceEngine.discoverWorkersForJob(jobId);
+        sendJson(res, 200, { ok: true, jobId, workers }, reqOrigin);
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/workforce/jobs/register") {
+        const body = await readJsonBody(req);
+        const customerAccountId = String(body.customerAccountId || "");
+        if (config.isProductionMode || getWalletToken()) {
+          assertCustomerOrOperatorSession(customerAccountId);
+        }
+        const prompt = String(body.prompt || "").trim();
+        if (!prompt) {
+          throw new Error("ERR_INVALID_PROMPT: Task prompt is required.");
+        }
+        const job = workforceEngine.registerJob({
+          jobId: String(body.jobId || ""),
+          customerAccountId: String(body.customerAccountId || ""),
+          amountAtomic: String(body.amountAtomic || "1000000"),
+          requiredCapabilities: Array.isArray(body.requiredCapabilities)
+            ? body.requiredCapabilities.map(String)
+            : String(body.requiredCapabilities || "research").split(","),
+          prompt,
+          deadlineSec: body.deadlineSec ? Number(body.deadlineSec) : Math.floor(Date.now() / 1000) + 86400,
+          funded: body.funded !== undefined ? Boolean(body.funded) : true,
+        });
+        sendJson(res, 200, { ok: true, job }, reqOrigin);
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/workforce/jobs/assign") {
+        const body = await readJsonBody(req);
+        if (config.isProductionMode || getWalletToken()) {
+          assertOperatorOrAdminSession();
+        }
+        const job = workforceEngine.assignJob(
+          String(body.jobId || ""),
+          body.workerId ? String(body.workerId) : undefined
+        );
+        sendJson(res, 200, { ok: true, job }, reqOrigin);
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/workforce/jobs/accept") {
+        const body = await readJsonBody(req);
+        const workerId = String(body.workerId || "");
+        const headerToken = getWorkerToken();
+        if (config.isProductionMode && !headerToken) {
+          throw new Error("ERR_WORKER_AUTH_REQUIRED: Missing x-worker-token.");
+        }
+        if (config.isProductionMode || headerToken) {
+          workforceEngine.assertWorkerAuthorized(workerId, headerToken);
+        }
+        const job = workforceEngine.acceptJob(
+          String(body.jobId || ""),
+          workerId
+        );
+        sendJson(res, 200, { ok: true, job }, reqOrigin);
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/workforce/jobs/execute") {
+        const body = await readJsonBody(req);
+        const workerId = String(body.workerId || "");
+        const headerToken = getWorkerToken();
+        if (config.isProductionMode && !headerToken) {
+          throw new Error("ERR_WORKER_AUTH_REQUIRED: Missing x-worker-token.");
+        }
+        if (config.isProductionMode || headerToken) {
+          workforceEngine.assertWorkerAuthorized(workerId, headerToken);
+        }
+        const job = await workforceEngine.executeJob({
+          jobId: String(body.jobId || ""),
+          workerId,
+          aiAdapter,
+          outlayerAdapter: outlayerExecAdapter,
+          requireLiveOutlayer:
+            config.isProductionMode && config.walletMode === "outlayer",
+          maxRetries: body.maxRetries !== undefined ? Number(body.maxRetries) : 1,
+          timeoutMs: body.timeoutMs !== undefined ? Number(body.timeoutMs) : 20_000,
+        });
+        if (job.outlayerMode === "live_outlayer" && !job.outlayerAttestationVerified) {
+          throw new Error(
+            "ERR_OUTLAYER_TEE_UNVERIFIED: Refusing to submit delivery before independent TEE attestation verification passes."
+          );
+        }
+        const submission =
+          job.output && job.evidenceHash
+            ? verificationEngine.submitDelivery({
+                jobId: job.jobId,
+                workerId: String(body.workerId || ""),
+                workerAccountId: job.assignedWorkerAccountId || "worker.near",
+                expectedWorkerId: job.assignedWorkerId || "",
+                deliverable: job.output,
+                evidenceHash: job.evidenceHash,
+                deadlineSec: job.deadlineSec,
+              })
+            : null;
+        sendJson(res, 200, { ok: true, job, submission }, reqOrigin);
+        return;
+      }
+
+      // ── PHASE 4: DELIVERY & EVIDENCE VERIFICATION ─────────────────────────
+      if (method === "GET" && pathname === "/api/verification/submissions") {
+        sendJson(res, 200, { ok: true, submissions: verificationEngine.listSubmissions() }, reqOrigin);
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/verification/submit") {
+        const body = await readJsonBody(req);
+        const workerId = String(body.workerId || "");
+        if (config.isProductionMode) {
+          const workerToken = getWorkerToken();
+          if (workerToken) {
+            workforceEngine.assertWorkerAuthorized(workerId, workerToken);
+          } else {
+            assertOperatorOrAdminSession();
+          }
+        }
+        const wfJob = workforceEngine.getJob(String(body.jobId || ""));
+        const submission = verificationEngine.submitDelivery({
+          jobId: String(body.jobId || ""),
+          workerId: String(body.workerId || ""),
+          workerAccountId: String(body.workerAccountId || wfJob?.assignedWorkerAccountId || ""),
+          expectedWorkerId: String(wfJob?.assignedWorkerId || body.workerId || ""),
+          deliverable: (body.deliverable as Record<string, unknown>) || {},
+          evidenceHash: String(body.evidenceHash || ""),
+          deadlineSec: body.deadlineSec ? Number(body.deadlineSec) : (wfJob?.deadlineSec ?? Math.floor(Date.now() / 1000) + 86400),
+        });
+        sendJson(res, 200, { ok: true, submission }, reqOrigin);
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/verification/verify") {
+        const body = await readJsonBody(req);
+        const verifierAccountId = String(body.verifierAccountId || "");
+        if (config.isProductionMode || getWalletToken()) {
+          const wfJob = workforceEngine.getJob(String(body.jobId || ""));
+          const authed = assertCustomerOrOperatorSession(wfJob?.customerAccountId || verifierAccountId);
+          if (verifierAccountId && verifierAccountId !== authed) {
+            throw new Error(
+              `ERR_ACCOUNT_IMPERSONATION_BLOCKED: Authenticated wallet ${authed} cannot verify as ${verifierAccountId}.`
+            );
+          }
+        }
+        const decision = String(body.decision || "") as "VERIFIED" | "REJECTED" | "DISPUTED";
+        const submission = verificationEngine.verifyDelivery({
+          jobId: String(body.jobId || ""),
+          verifierAccountId: String(body.verifierAccountId || ""),
+          decision,
+          reason: body.reason ? String(body.reason) : undefined,
+        });
+        if (workforceEngine.getJob(submission.jobId)) {
+          workforceEngine.updateJobState(
+            submission.jobId,
+            decision === "VERIFIED" ? "VERIFIED" : "FAILED"
+          );
+        }
+        sendJson(res, 200, { ok: true, submission }, reqOrigin);
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/verification/prepare-audit-anchor") {
+        const body = await readJsonBody(req);
+        const jobId = String(body.jobId || "");
+        const wfJob = workforceEngine.getJob(jobId);
+        const walletToken =
+          typeof req.headers["x-wallet-session"] === "string"
+            ? req.headers["x-wallet-session"]
+            : undefined;
+        const initiator = String(
+          body.initiatorAccountId || body.payerAccountId || config.mainnetAuditOperatorAccountId
+        );
+        walletSessionManager.assertAuthorizedCustomer(walletToken, initiator);
+        const anchorPlan = await verificationEngine.prepareAuditAnchorTx(nearRpcAdapter, config, {
+          jobId,
+          payerAccountId: String(body.payerAccountId || config.mainnetAuditOperatorAccountId),
+          initiatorAccountId: initiator,
+          authorizedCustomerAccountId: wfJob?.customerAccountId || config.customerAccountId,
+          eventRoot: body.eventRoot ? String(body.eventRoot) : undefined,
+          paymentReceiptRoot: body.paymentReceiptRoot ? String(body.paymentReceiptRoot) : undefined,
+          completedAtSec: typeof body.completedAtSec === "number" ? body.completedAtSec : undefined,
+        });
+        sendJson(res, 200, { ok: true, anchorPlan }, reqOrigin);
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/verification/submit-audit-anchor") {
+        const body = await readJsonBody(req);
+        const signerAccountId = String(
+          body.signerAccountId || config.mainnetAuditOperatorAccountId
+        );
+        const walletToken =
+          typeof req.headers["x-wallet-session"] === "string"
+            ? req.headers["x-wallet-session"]
+            : undefined;
+        walletSessionManager.assertAuthorizedCustomer(walletToken, signerAccountId);
+        if (signerAccountId !== config.mainnetAuditOperatorAccountId) {
+          throw new Error(
+            `ERR_NOT_OPERATOR_AUTHORITY: Only operator ${config.mainnetAuditOperatorAccountId} can submit AuditAnchor transactions.`
+          );
+        }
+        const submission = verificationEngine.recordAnchorSubmission({
+          jobId: String(body.jobId || ""),
+          txHash: String(body.txHash || ""),
+          signerAccountId,
+          contractId: config.mainnetAuditContractId,
+        });
+        sendJson(res, 200, { ok: true, submission }, reqOrigin);
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/verification/reconcile-audit-anchor") {
+        const body = await readJsonBody(req);
+        const requesterAccountId = String(
+          body.signerAccountId || config.mainnetAuditOperatorAccountId
+        );
+        const walletToken =
+          typeof req.headers["x-wallet-session"] === "string"
+            ? req.headers["x-wallet-session"]
+            : undefined;
+        walletSessionManager.assertAuthorizedCustomer(walletToken, requesterAccountId);
+        const reconciliation = await verificationEngine.reconcileAuditAnchorTx(
+          nearRpcAdapter,
+          config,
+          {
+            jobId: String(body.jobId || ""),
+            txHash: body.txHash ? String(body.txHash) : undefined,
+            signerAccountId: body.signerAccountId ? String(body.signerAccountId) : undefined,
+          }
+        );
+        sendJson(res, 200, { ok: true, ...reconciliation }, reqOrigin);
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/verification/recover-anchors") {
+        const walletToken =
+          typeof req.headers["x-wallet-session"] === "string"
+            ? req.headers["x-wallet-session"]
+            : undefined;
+        walletSessionManager.assertAuthorizedCustomer(
+          walletToken,
+          config.mainnetAuditOperatorAccountId
+        );
+        const recovery = await verificationEngine.recoverInterruptedAnchors(
+          nearRpcAdapter,
+          config
+        );
+        sendJson(
+          res,
+          200,
+          { ok: true, recovery, submissions: verificationEngine.listSubmissions() },
+          reqOrigin
+        );
+        return;
+      }
+
+      // ── PHASE 5: SETTLEMENT & PAYOUTS ─────────────────────────────────────
+      if (method === "GET" && pathname === "/api/settlement/list") {
+        sendJson(res, 200, { ok: true, settlements: settlementEngine.listSettlements() }, reqOrigin);
+        return;
+      }
+
+      if (method === "GET" && pathname === "/api/settlement/history") {
+        sendJson(res, 200, { ok: true, history: settlementEngine.listPaymentHistory() }, reqOrigin);
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/settlement/prepare") {
+        const body = await readJsonBody(req);
+        const jobId = String(body.jobId || "");
+        const wfJob = workforceEngine.getJob(jobId);
+        const customerAccountId = String(body.customerAccountId || wfJob?.customerAccountId || "");
+        if (config.isProductionMode || getWalletToken()) {
+          assertCustomerOrOperatorSession(customerAccountId);
+        }
+        const sub = verificationEngine.getSubmission(jobId);
+        if (!sub) {
+          throw new Error(`ERR_DELIVERY_NOT_FOUND: No delivery submission for ${jobId}`);
+        }
+        const settlement = settlementEngine.prepareSettlement(config, {
+          jobId,
+          kind: (String(body.kind || "PAYOUT_ACCEPT_DELIVERY") as "PAYOUT_ACCEPT_DELIVERY" | "CUSTOMER_REFUND"),
+          verificationStatus: sub.verificationStatus,
+          customerAccountId: String(body.customerAccountId || wfJob?.customerAccountId || ""),
+          workerAccountId: String(body.workerAccountId || sub.workerAccountId),
+          grossAmountAtomic: String(body.grossAmountAtomic || wfJob?.amountAtomic || ""),
+          platformFeeBps: body.platformFeeBps !== undefined ? Number(body.platformFeeBps) : 250,
+        });
+        sendJson(res, 200, { ok: true, settlement }, reqOrigin);
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/settlement/submit-tx") {
+        const body = await readJsonBody(req);
+        const signerAccountId = String(body.signerAccountId || "");
+        if (config.isProductionMode || getWalletToken()) {
+          assertCustomerOrOperatorSession(signerAccountId);
+        }
+        const settlement = settlementEngine.submitSettlementTx({
+          settlementId: String(body.settlementId || ""),
+          txHash: String(body.txHash || ""),
+          signerAccountId: String(body.signerAccountId || ""),
+        });
+        sendJson(res, 200, { ok: true, settlement }, reqOrigin);
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/settlement/reconcile") {
+        const body = await readJsonBody(req);
+        if (config.isProductionMode || getWalletToken()) {
+          const existing = settlementEngine.listSettlements().find(
+            (s) => s.settlementId === String(body.settlementId || "")
+          );
+          assertCustomerOrOperatorSession(existing?.customerAccountId);
+        }
+        const settlement = await settlementEngine.reconcileSettlementTx(nearRpcAdapter, {
+          settlementId: String(body.settlementId || ""),
+          txHash: String(body.txHash || ""),
+        });
+        if (settlement.status === "CONFIRMED" && settlement.onChainConfirmed) {
+          const wfJob = workforceEngine.getJob(settlement.jobId);
+          if (wfJob) {
+            if (settlement.kind === "PAYOUT_ACCEPT_DELIVERY") {
+              workforceEngine.updateJobState(settlement.jobId, "SETTLED");
+              if (wfJob.assignedWorkerId) {
+                workforceEngine.creditWorkerEarnings(
+                  wfJob.assignedWorkerId,
+                  settlement.workerPayoutAtomic
+                );
+              }
+            } else if (settlement.kind === "CUSTOMER_REFUND") {
+              workforceEngine.updateJobState(settlement.jobId, "REFUNDED");
+            }
+          }
+        }
+        sendJson(res, 200, { ok: true, settlement }, reqOrigin);
+        return;
+      }
+
+      // ── PHASE 6: OUTLAYER EXECUTION ADAPTER ───────────────────────────────
+      if (method === "GET" && pathname === "/api/outlayer/requests") {
+        sendJson(res, 200, { ok: true, requests: outlayerExecAdapter.listRequests() }, reqOrigin);
+        return;
+      }
+
+      if (method === "GET" && pathname === "/api/outlayer/config-status") {
+        sendJson(
+          res,
+          200,
+          { ok: true, outlayer: outlayerExecAdapter.validateConfiguration() },
+          reqOrigin
+        );
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/settlement/prepare-claim") {
+        const authToken =
+          typeof req.headers["x-wallet-session"] === "string"
+            ? req.headers["x-wallet-session"]
+            : undefined;
+        const body = await readJsonBody(req);
+        const claimantAccountId = String(body.claimantAccountId || "");
+        walletSessionManager.assertAuthorizedCustomer(authToken, claimantAccountId);
+        const preparedTransaction = settlementEngine.prepareClaimUsdcTransaction(config, {
+          claimantAccountId,
+          amountAtomic: body.amountAtomic ? String(body.amountAtomic) : undefined,
+          recipientAccountId: body.recipientAccountId
+            ? String(body.recipientAccountId)
+            : undefined,
+        });
+        sendJson(res, 200, { ok: true, preparedTransaction }, reqOrigin);
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/outlayer/execute") {
+        const body = await readJsonBody(req);
+        if (config.isProductionMode) {
+          const workerToken = getWorkerToken();
+          if (workerToken) {
+            workforceEngine.assertWorkerAuthorized(String(body.workerId || ""), workerToken);
+          } else {
+            assertOperatorOrAdminSession();
+          }
+        }
+        const record = await outlayerExecAdapter.executeAndVerify({
+          jobId: String(body.jobId || ""),
+          workerId: String(body.workerId || ""),
+          prompt: String(body.prompt || ""),
+          evidenceHash: String(body.evidenceHash || "0x" + "11".repeat(32)),
+          asyncMode: Boolean(body.asyncMode),
+        });
+        sendJson(res, 200, { ok: true, record }, reqOrigin);
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/outlayer/poll") {
+        const body = await readJsonBody(req);
+        if (config.isProductionMode || getWalletToken()) {
+          assertCustomerOrOperatorSession();
+        }
+        const record = await outlayerExecAdapter.pollCall(String(body.requestId || ""));
+        sendJson(res, 200, { ok: true, record }, reqOrigin);
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/outlayer/verify-attestation") {
+        const body = await readJsonBody(req);
+        if (config.isProductionMode || getWalletToken()) {
+          assertCustomerOrOperatorSession();
+        }
+        const record = await outlayerExecAdapter.verifyAttestation(String(body.requestId || ""));
+        sendJson(res, 200, { ok: true, record }, reqOrigin);
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/outlayer/verify-public") {
+        const body = await readJsonBody(req);
+        const result = await outlayerExecAdapter.verifyPublicAttestationByCallId(
+          String(body.callId || ""),
+          {
+            expectedWasmHash: body.expectedWasmHash ? String(body.expectedWasmHash) : undefined,
+            expectedInputHash: body.expectedInputHash ? String(body.expectedInputHash) : undefined,
+            expectedOutputHash: body.expectedOutputHash ? String(body.expectedOutputHash) : undefined,
+          }
+        );
+        sendJson(res, 200, { ok: true, ...result }, reqOrigin);
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/workforce/jobs/reassign") {
+        const body = await readJsonBody(req);
+        if (config.isProductionMode || getWalletToken()) {
+          assertOperatorOrAdminSession();
+        }
+        const job = workforceEngine.reassignJob(
+          String(body.jobId || ""),
+          body.workerId ? String(body.workerId) : undefined
+        );
+        sendJson(res, 200, { ok: true, job }, reqOrigin);
+        return;
+      }
+
+      // ── PHASE 9.1: NEAR INTENTS 1CLICK CROSS-CHAIN USDC FUNDING ───────────
+      if (method === "GET" && pathname === "/api/intents/tokens") {
+        const forceRefresh = parsedUrl.searchParams.get("refresh") === "true";
+        const discovered = await intentsClient.fetchSupportedTokens(forceRefresh);
+        sendJson(res, 200, { ok: true, ...discovered }, reqOrigin);
+        return;
+      }
+
+      if (method === "GET" && pathname === "/api/intents/list") {
+        sendJson(res, 200, { ok: true, intents: intentsClient.listIntents() }, reqOrigin);
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/intents/quote") {
+        const body = await readJsonBody(req);
+        const dry = body.dry !== undefined ? Boolean(body.dry) : true;
+        const customerNearAccount = String(body.customerNearAccount || "");
+        if (!dry) {
+          const token =
+            typeof req.headers["x-wallet-session"] === "string"
+              ? req.headers["x-wallet-session"]
+              : undefined;
+          walletSessionManager.assertAuthorizedCustomer(token, customerNearAccount);
+        }
+        const resQuote = await intentsClient.requestQuote(nearRpcAdapter, {
+          dry,
+          originAsset: String(body.originAsset || ""),
+          amountAtomic: String(body.amountAtomic || ""),
+          slippageToleranceBps: Number(body.slippageToleranceBps || 100),
+          customerNearAccount,
+          sourceWalletAddress: String(body.sourceWalletAddress || ""),
+          deadlineIso: body.deadlineIso ? String(body.deadlineIso) : undefined,
+        });
+        sendJson(res, 200, { ok: true, ...resQuote }, reqOrigin);
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/intents/deposit-submit") {
+        const body = await readJsonBody(req);
+        const customerNearAccount = String(body.customerNearAccount || "");
+        const token =
+          typeof req.headers["x-wallet-session"] === "string"
+            ? req.headers["x-wallet-session"]
+            : undefined;
+        walletSessionManager.assertAuthorizedCustomer(token, customerNearAccount);
+        const record = await intentsClient.submitDepositTx({
+          depositAddress: String(body.depositAddress || ""),
+          txHash: String(body.txHash || ""),
+          customerNearAccount,
+        });
+        sendJson(res, 200, { ok: true, record }, reqOrigin);
+        return;
+      }
+
+      if (method === "GET" && pathname === "/api/intents/status") {
+        const depositAddress = parsedUrl.searchParams.get("depositAddress") || "";
+        const record = await intentsClient.pollStatus(depositAddress);
+        sendJson(res, 200, { ok: true, record }, reqOrigin);
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/intents/verify-destination") {
+        const body = await readJsonBody(req);
+        const record = await intentsClient.verifyDestinationDelivery(nearRpcAdapter, {
+          depositAddress: String(body.depositAddress || ""),
+          expectedRecipient: String(body.expectedRecipient || ""),
+          expectedTokenContract: body.expectedTokenContract
+            ? String(body.expectedTokenContract)
+            : undefined,
+        });
+        sendJson(res, 200, { ok: true, record }, reqOrigin);
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/intents/prepare-deposit") {
+        const body = await readJsonBody(req);
+        const depositPlan = intentsClient.prepareSourceWalletDeposit(
+          String(body.depositAddress || "")
+        );
+        sendJson(res, 200, { ok: true, depositPlan }, reqOrigin);
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/intents/prepare-escrow") {
+        const authToken =
+          typeof req.headers["x-wallet-session"] === "string"
+            ? req.headers["x-wallet-session"]
+            : undefined;
+        const body = await readJsonBody(req);
+        const customerAccountId = String(body.customerAccountId || "");
+        walletSessionManager.assertAuthorizedCustomer(
+          authToken,
+          customerAccountId
+        );
+        const depositAddress = String(body.depositAddress || "");
+        const prepared = intentsClient.prepareCoreEscrowFromIntent(nearRpcAdapter, {
+          depositAddress,
+          workerAccountId: String(body.workerAccountId || config.mainnetOperatorAccountId),
+          deadlineSec: Number(body.deadlineSec || Math.floor(Date.now() / 1000) + 86_400),
+          termsHash: String(body.termsHash || "0x" + "00".repeat(32)),
+          expectedCustomerAccount: customerAccountId,
+        });
+        sendJson(
+          res,
+          200,
+          { ok: true, verifiedAccountId: customerAccountId, ...prepared },
+          reqOrigin
+        );
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/workforce/jobs/cancel") {
+        const authToken =
+          typeof req.headers["x-wallet-session"] === "string"
+            ? req.headers["x-wallet-session"]
+            : undefined;
+        const body = await readJsonBody(req);
+        const jobId = String(body.jobId || "");
+        const existingJob = workforceEngine.getJob(jobId);
+        if (!existingJob) {
+          throw new Error(`ERR_UNKNOWN_JOB: ${jobId}`);
+        }
+        walletSessionManager.assertAuthorizedCustomer(
+          authToken,
+          existingJob.customerAccountId
+        );
+        const job = workforceEngine.cancelJob(jobId);
+        sendJson(res, 200, { ok: true, job }, reqOrigin);
+        return;
+      }
+
+      // ── PHASE 10.1, 10.5 & 16: DATABASE, AI & AGGREGATE HEALTH ──────────────
+      if (method === "GET" && pathname === "/api/ai/status") {
+        const ai = await aiAdapter.probeProviderHealth();
+        sendJson(res, 200, { ok: true, ai }, reqOrigin);
+        return;
+      }
+
+      if (method === "GET" && pathname === "/api/health") {
+        const [database, ai] = await Promise.all([
+          repo.healthCheck(),
+          aiAdapter.probeProviderHealth(),
+        ]);
+        const outlayer = outlayerExecAdapter.validateConfiguration();
+        const escrows = escrowTracker.listRecords();
+        const submissions = verificationEngine.listSubmissions();
+        const settlements = settlementEngine.listSettlements();
+        const outlayerRequests = outlayerExecAdapter.listRequests();
+        const recovery = {
+          pendingEscrows: escrows.filter(
+            (e) => e.escrowState === "PENDING" || e.escrowState === "UNKNOWN_NEEDS_RECONCILIATION"
+          ).length,
+          pendingAnchors: submissions.filter(
+            (s) => s.anchorStatus === "SUBMITTED" || s.anchorStatus === "PENDING"
+          ).length,
+          failedAnchors: submissions.filter((s) => s.anchorStatus === "FAILED").length,
+          pendingSettlements: settlements.filter(
+            (s) => s.status === "PENDING" || s.status === "FAILED_CALLBACK_RECOVERABLE"
+          ).length,
+          failedSettlements: settlements.filter((s) => s.status === "FAILED").length,
+          failedOutlayerCalls: outlayerRequests.filter(
+            (r) => r.status === "EXECUTION_FAILED" || r.status === "ATTESTATION_FAILED"
+          ).length,
+        };
+        sendJson(
+          res,
+          200,
+          {
+            ok: true,
+            uptimeSec: Math.floor((Date.now() - startedAtMs) / 1000),
+            network: config.network,
+            isProductionMode: config.isProductionMode,
+            allowSandboxDemoEndpoints: config.allowSandboxDemoEndpoints,
+            liveTxBroadcastingEnabled: config.liveTxBroadcastingEnabled,
+            database,
+            ai,
+            outlayer,
+            metrics: { ...metrics },
+            recovery,
+          },
+          reqOrigin,
+          undefined,
+          correlationId
+        );
+        return;
+      }
+
+      if (method === "GET" && pathname === "/api/metrics") {
+        const escrows = escrowTracker.listRecords();
+        const submissions = verificationEngine.listSubmissions();
+        const settlements = settlementEngine.listSettlements();
+        const outlayerRequests = outlayerExecAdapter.listRequests();
+        const jobs = workforceEngine.listJobs();
+        const workers = workforceEngine.listWorkers();
+        sendJson(
+          res,
+          200,
+          {
+            ok: true,
+            uptimeSec: Math.floor((Date.now() - startedAtMs) / 1000),
+            requests: { ...metrics },
+            counts: {
+              workers: workers.length,
+              jobs: jobs.length,
+              escrows: escrows.length,
+              submissions: submissions.length,
+              settlements: settlements.length,
+              outlayerRequests: outlayerRequests.length,
+              pendingEscrows: escrows.filter(
+                (e) => e.escrowState === "PENDING" || e.escrowState === "UNKNOWN_NEEDS_RECONCILIATION"
+              ).length,
+              pendingAnchors: submissions.filter(
+                (s) => s.anchorStatus === "SUBMITTED" || s.anchorStatus === "PENDING"
+              ).length,
+              failedAnchors: submissions.filter((s) => s.anchorStatus === "FAILED").length,
+              pendingSettlements: settlements.filter(
+                (s) => s.status === "PENDING" || s.status === "FAILED_CALLBACK_RECOVERABLE"
+              ).length,
+              failedSettlements: settlements.filter((s) => s.status === "FAILED").length,
+              failedOutlayerCalls: outlayerRequests.filter(
+                (r) => r.status === "EXECUTION_FAILED" || r.status === "ATTESTATION_FAILED"
+              ).length,
+            },
+          },
+          reqOrigin,
+          undefined,
+          correlationId
+        );
+        return;
+      }
+
+      if (method === "GET" && pathname === "/api/routes/policy") {
+        sendJson(
+          res,
+          200,
+          {
+            ok: true,
+            isProductionMode: config.isProductionMode,
+            allowSandboxDemoEndpoints: config.allowSandboxDemoEndpoints,
+            policy: PRODUCTION_ROUTE_POLICY,
+          },
+          reqOrigin,
+          config.corsAllowedOrigin
+        );
+        return;
+      }
+
+      if (method === "GET" && pathname === "/api/database/health") {
+        const health = await repo.healthCheck();
+        sendJson(res, 200, { ok: true, health }, reqOrigin);
+        return;
+      }
+
+      if (method === "GET" && pathname === "/api/audit/status") {
+        const contractState = await nearRpcAdapter.inspectAuditContractState(
+          config.mainnetAuditContractId
+        );
+        sendJson(
+          res,
+          200,
+          {
+            ok: true,
+            contractState,
+            submissions: verificationEngine.listSubmissions(),
+          },
+          reqOrigin
+        );
+        return;
+      }
+
+      if (method === "GET" && pathname === "/api/audit/readiness") {
+        const wasmPath = path.resolve(
+          __dirname,
+          "..",
+          "..",
+          "near",
+          "artifacts",
+          "ci-mvp",
+          "snapfall_audit.wasm"
+        );
+        let wasmExists = false;
+        let wasmBytes = 0;
+        let wasmSha256 = "";
+        if (fs.existsSync(wasmPath)) {
+          const buf = fs.readFileSync(wasmPath);
+          wasmExists = true;
+          wasmBytes = buf.length;
+          wasmSha256 = crypto.createHash("sha256").update(buf).digest("hex");
+        }
+        const expectedSha256 =
+          "88b1c550b639c31f9fede0cbc305bbb2fbb26389c942e28e2f79bbddfb9c13e1";
+        const parentAccount = await nearRpcAdapter.inspectMainnetAccount(
+          config.mainnetAdminAccountId
+        );
+        const auditAccount = await nearRpcAdapter.inspectMainnetAccount(
+          config.mainnetAuditContractId
+        );
+        const auditContractState = auditAccount.exists
+          ? await nearRpcAdapter.inspectAuditContractState(config.mainnetAuditContractId)
+          : null;
+        const requiredNear = 1.5;
+        const parentNear = Number(parentAccount.amountNear || "0");
+        const sufficientFunds = parentNear >= requiredNear;
+        sendJson(
+          res,
+          200,
+          {
+            ok: true,
+            wasmArtifact: {
+              path: "near/artifacts/ci-mvp/snapfall_audit.wasm",
+              exists: wasmExists,
+              bytes: wasmBytes,
+              sha256: wasmSha256,
+              matchesCiExpected: wasmBytes === 131338 && wasmSha256 === expectedSha256,
+            },
+            mainnet: {
+              parentAccountId: config.mainnetAdminAccountId,
+              parentNearBalance: parentAccount.amountNear,
+              auditAccountId: config.mainnetAuditContractId,
+              auditAccountExists: auditAccount.exists,
+              auditContractState,
+              requiredNearForDeployment: requiredNear.toFixed(2),
+              storageStakeNear: "1.32",
+              gasReserveNear: "0.18",
+              publicKeyPermissions: "FullAccess key generated for audit.cryptozax.near (stored locally in gitignored keystore; never committed).",
+              sufficientFunds,
+              shortfallNear: sufficientFunds
+                ? "0.0000"
+                : Math.max(0, requiredNear - parentNear).toFixed(4),
+              postDeploymentChecks: [
+                `view ${config.mainnetAuditContractId} get_anchor '{"job_id":"0x${"0".repeat(64)}"}'`,
+                `view_state ${config.mainnetAuditContractId} STATE (core_contract=${config.mainnetCoreContractId}, operator_authority=${config.mainnetAuditOperatorAccountId}, admin=${config.mainnetAdminAccountId})`,
+              ],
+              rollbackAndRecovery: [
+                "Do not call DeleteAccount until any anchored audit state is backed up.",
+                "If init fails or wrong WASM was deployed, re-deploy snapfall_audit.wasm to audit.cryptozax.near using its FullAccess key.",
+                "To recover remaining NEAR if aborting before use, DeleteAccount with beneficiary cryptozax.near.",
+              ],
+              proposedSequence: [
+                {
+                  step: 1,
+                  signerId: config.mainnetAdminAccountId,
+                  receiverId: config.mainnetAuditContractId,
+                  actions: [
+                    "CreateAccount",
+                    "Transfer(2.00 NEAR)",
+                    "AddKey(FullAccess)",
+                    "DeployContract(snapfall_audit.wasm, 131,338 bytes)",
+                    `FunctionCall(new({ admin: "${config.mainnetAdminAccountId}", core_contract: "${config.mainnetCoreContractId}" }))`,
+                  ],
+                },
+              ],
+            },
+          },
+          reqOrigin
+        );
+        return;
+      }
+
+      // Production gate: reject sandbox/demo/reset routes by default in production mode
+      // Note: /api/approvals/decide remains enabled in production (with operator wallet-session auth).
+      const isSandboxDemoRoute =
+        pathname === "/api/reset" ||
+        pathname.startsWith("/api/jobs/") ||
+        pathname === "/api/audit/anchor" ||
+        pathname.startsWith("/api/float/") ||
+        pathname.startsWith("/api/demo/");
+      if (isSandboxDemoRoute && !config.allowSandboxDemoEndpoints) {
+        sendJson(
+          res,
+          403,
+          {
+            ok: false,
+            error:
+              "ERR_SANDBOX_ENDPOINT_DISABLED_IN_PRODUCTION: Sandbox and demo endpoints are disabled in production mode.",
+          },
+          reqOrigin,
+          config.corsAllowedOrigin
         );
         return;
       }
@@ -307,7 +1916,25 @@ export function createSnowMoonApp(customConfig?: SnowMoonConfig): SnowMoonApp {
       if (method === "POST" && pathname === "/api/approvals/decide") {
         const body = await readJsonBody(req);
         const approvalId = String(body.approvalId || "");
-        const decidedBy = String(body.decidedBy || config.operatorAccountId);
+        const decidedBy = String(
+          body.decidedBy ||
+            (config.isProductionMode ? config.mainnetAdminAccountId : config.operatorAccountId)
+        );
+        if (config.isProductionMode) {
+          const walletToken =
+            typeof req.headers["x-wallet-session"] === "string"
+              ? req.headers["x-wallet-session"]
+              : undefined;
+          walletSessionManager.assertAuthorizedCustomer(walletToken, decidedBy);
+          if (
+            decidedBy !== config.mainnetAdminAccountId &&
+            decidedBy !== config.mainnetAuditOperatorAccountId
+          ) {
+            throw new Error(
+              `ERR_NOT_OPERATOR_AUTHORITY: Only authorized operator (${config.mainnetAdminAccountId}) can decide approvals in production.`
+            );
+          }
+        }
         const decision =
           String(body.decision || "APPROVE").toUpperCase() === "REJECT"
             ? "REJECT"
@@ -413,6 +2040,10 @@ export function createSnowMoonApp(customConfig?: SnowMoonConfig): SnowMoonApp {
       if (method === "POST" && pathname === "/api/demo/run-complete-journey") {
         const body = await readJsonBody(req);
         const stepsLog: Array<{ step: number; title: string; detail: string }> = [];
+
+        if (config.walletMode === "outlayer" && config.hasOutlayerKey) {
+          await policyAdapter.syncLiveWalletStatus().catch(() => undefined);
+        }
 
         // Step 1: Customer connects wallet
         stepsLog.push({
@@ -564,9 +2195,14 @@ export function createSnowMoonApp(customConfig?: SnowMoonConfig): SnowMoonApp {
       const filePath =
         pathname === "/"
           ? path.join(publicDir, "index.html")
-          : path.join(publicDir, pathname.replace(/^\/+/, ""));
+          : path.resolve(publicDir, pathname.replace(/^\/+/, ""));
+      const relativeToPublic = path.relative(publicDir, filePath);
+      const isInsidePublic =
+        relativeToPublic !== "" &&
+        !relativeToPublic.startsWith("..") &&
+        !path.isAbsolute(relativeToPublic);
 
-      if (filePath.startsWith(publicDir) && fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+      if (isInsidePublic && fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
         const ext = path.extname(filePath).toLowerCase();
         const contentType =
           ext === ".html"
@@ -576,19 +2212,64 @@ export function createSnowMoonApp(customConfig?: SnowMoonConfig): SnowMoonApp {
               : ext === ".css"
                 ? "text/css; charset=utf-8"
                 : "application/octet-stream";
-        res.writeHead(200, { "Content-Type": contentType });
+        res.writeHead(200, {
+          "Content-Type": contentType,
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "DENY",
+          "Referrer-Policy": "no-referrer",
+        });
         res.end(fs.readFileSync(filePath));
         return;
       }
 
-      sendJson(res, 404, { ok: false, error: `Not found: ${method} ${pathname}` });
+      metrics.errors4xx += 1;
+      sendJson(res, 404, { ok: false, error: `Not found: ${method} ${pathname}` }, reqOrigin, undefined, correlationId);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      sendJson(res, 400, { ok: false, error: message });
+      const rawMessage = err instanceof Error ? err.message : String(err);
+      const message = redactSensitiveText(rawMessage);
+      const status = message.startsWith("ERR_WALLET_AUTH_REQUIRED") ||
+        message.startsWith("ERR_WALLET_SESSION_") ||
+        message.startsWith("ERR_UNAUTHORIZED_WORKER") ||
+        message.startsWith("ERR_WORKER_UNAUTHORIZED") ||
+        message.startsWith("ERR_WORKER_AUTH")
+        ? 401
+        : message.startsWith("ERR_ACCOUNT_IMPERSONATION_BLOCKED") ||
+            message.startsWith("ERR_PRIVATE_KEY_FORBIDDEN")
+          ? 403
+          : message.startsWith("ERR_PAYLOAD_TOO_LARGE")
+            ? 413
+            : 400;
+      if (status >= 500) metrics.errors5xx += 1;
+      else if (status >= 400) metrics.errors4xx += 1;
+      logStructuredEvent(status >= 500 ? "error" : "warn", "request_error", {
+        correlationId,
+        method: req.method || "GET",
+        pathname: req.url || "/",
+        status,
+        error: message,
+      });
+      sendJson(res, status, { ok: false, error: message }, reqOrigin, undefined, correlationId);
     }
   });
 
-  return { config, engine, policyAdapter, aiAdapter, server };
+  server.keepAliveTimeout = 1000;
+
+  return {
+    config,
+    engine,
+    policyAdapter,
+    aiAdapter,
+    nearRpcAdapter,
+    escrowTracker,
+    walletSessionManager,
+    repo,
+    intentsClient,
+    outlayerExecAdapter,
+    workforceEngine,
+    verificationEngine,
+    settlementEngine,
+    server,
+  };
 }
 
 // Start HTTP server if invoked directly
