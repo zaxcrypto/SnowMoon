@@ -17,7 +17,10 @@ cd "${NEAR_DIR}"
 
 echo "[1/3] Building production WASM artifacts (--no-default-features)..."
 if rustup toolchain list 2>/dev/null | grep -q "^nightly"; then
-  cargo +nightly build -Z build-std=std,panic_abort -Z build-std-features=panic_immediate_abort -p snapfall-core -p snapfall-audit --target wasm32-unknown-unknown --release --no-default-features
+  cargo +nightly build \
+    -Z build-std=std,panic_abort \
+    --config 'target.wasm32-unknown-unknown.rustflags=["-C","target-cpu=mvp","-C","target-feature=-reference-types,-multivalue,-bulk-memory,-sign-ext,-mutable-globals,-nontrapping-fptoint","-Zunstable-options","-Cpanic=immediate-abort"]' \
+    -p snapfall-core -p snapfall-audit --target wasm32-unknown-unknown --release --no-default-features
 else
   cargo build -p snapfall-core -p snapfall-audit --target wasm32-unknown-unknown --release --no-default-features
 fi
