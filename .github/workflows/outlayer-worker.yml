@@ -37,12 +37,15 @@ jobs:
       - name: Build wasm32-wasip2 release component
         run: cargo build --target wasm32-wasip2 --release
       - name: Compute SHA-256 WASM hash for OUTLAYER_EXPECTED_WASM_HASH
-        run: sha256sum target/wasm32-wasip2/release/snowmoon_tee_worker.wasm > SHA256SUMS && cat SHA256SUMS
+        run: |
+          WASM_PATH=$(ls target/wasm32-wasip2/release/*.wasm | head -n 1)
+          test -n "$WASM_PATH"
+          sha256sum "$WASM_PATH" > SHA256SUMS && cat SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
           name: snowmoon-outlayer-tee-worker
           path: |
-            near/workers/snowmoon-tee-worker/target/wasm32-wasip2/release/snowmoon_tee_worker.wasm
+            near/workers/snowmoon-tee-worker/target/wasm32-wasip2/release/*.wasm
             near/workers/snowmoon-tee-worker/SHA256SUMS
           retention-days: 30
 
