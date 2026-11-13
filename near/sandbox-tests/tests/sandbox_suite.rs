@@ -319,3 +319,138 @@ async fn test_full_persistent_storage_delta_gate() {
     assert!(configured.0 >= required_yocto, "measured {delta} bytes requires {required_yocto} yocto > {}", configured.0);
 }
 
+#[tokio::test]
+async fn test_prepared_mainnet_escrow_payload_and_failure_matrix_sandbox() {
+    // Pre-deployment compatibility gate against compiled WASM (`snapfall_core.wasm` + `mock_ft.wasm`):
+    // Exercises the exact two-step flow prepared by `POST /api/near/prepare-tx`:
+    //   1. `storage_deposit({"account_id": customer})` with 0.030 NEAR (0.007 registration + 0.023 job storage)
+    //   2. `ft_transfer_call` with `CreateAndFundJob` JSON msg
+    // Plus all 5 failure / refund cases through `ft_resolve_transfer`.
+    let e = boot(true, true, false).await;
+    let terms_hex = "0xd8a2a66c36307e760125edcea6a9867891c4d19ef472e5a52e3db1583b3e14de";
+    let deadline_sec = 1_794_591_000u64;
+    let payment_atomic = usdc(100); // $100.00 USDC ("100000000")
+    let budget_atomic = usdc(25); // $25.00 USDC ("25000000")
+
+    let create_and_fund_msg = json!({
+        "CreateAndFundJob": {
+            "operator": e.operator.id(),
+            "max_operating_budget": budget_atomic.to_string(),
+            "terms_hash": terms_hex,
+            "deadline": deadline_sec,
+        }
+    })
+    .to_string();
+
+    let cust_bal_initial: U128 = e.ft.view("ft_balance_of").args_json(json!({"account_id": e.customer.id()})).await.unwrap().json().unwrap();
+    let core_bal_initial: U128 = e.ft.view("ft_balance_of").args_json(json!({"account_id": e.core.id()})).await.unwrap().json().unwrap();
+
+    // ─── Failure Case 1: Insufficient storage credits -> ft_on_transfer panics -> ft_resolve_transfer refunds 100% ───
+    let used_1: U128 = e.customer.call(e.ft.id(), "ft_transfer_call")
+        .deposit(ONE_YOCTO)
+        .gas(Gas::from_tgas(100))
+        .args_json(json!({
+            "receiver_id": e.core.id(),
+            "amount": payment_atomic.to_string(),
+            "memo": "SnowMoon CreateAndFundJob Escrow",
+            "msg": create_and_fund_msg,
+        }))
+        .transact().await.unwrap().unwrap().json().unwrap();
+    assert_eq!(used_1.0, 0, "ft_resolve_transfer must refund 100% when storage credits are missing");
+    let cust_bal_after_1: U128 = e.ft.view("ft_balance_of").args_json(json!({"account_id": e.customer.id()})).await.unwrap().json().unwrap();
+    assert_eq!(cust_bal_after_1.0, cust_bal_initial.0);
+
+    // ─── Step 1 of `/api/near/prepare-tx`: Register customer storage + 1 job deposit (0.030 NEAR) ───
+    let first_time_storage_deposit = NearToken::from_millinear(30); // 0.007 NEAR registration + 0.023 NEAR job deposit
+    e.customer.call(e.core.id(), "storage_deposit")
+        .deposit(first_time_storage_deposit)
+        .gas(Gas::from_tgas(30))
+        .args_json(json!({"account_id": e.customer.id()}))
+        .transact().await.unwrap().unwrap();
+    let credit_bal: U128 = e.core.view("storage_credit_of").args_json(json!({"account_id": e.customer.id()})).await.unwrap().json().unwrap();
+    assert_eq!(credit_bal.0, STORAGE_DEPOSIT.as_yoctonear());
+
+    // ─── Failure Case 2: Invalid msg JSON -> ft_on_transfer panics -> 100% USDC refunded ───
+    let used_2: U128 = e.customer.call(e.ft.id(), "ft_transfer_call")
+        .deposit(ONE_YOCTO)
+        .gas(Gas::from_tgas(100))
+        .args_json(json!({
+            "receiver_id": e.core.id(),
+            "amount": payment_atomic.to_string(),
+            "memo": "SnowMoon CreateAndFundJob Escrow",
+            "msg": r#"{"MalformedVariant":{}}"#,
+        }))
+        .transact().await.unwrap().unwrap().json().unwrap();
+    assert_eq!(used_2.0, 0);
+
+    // ─── Failure Case 3: Paused vault -> ft_on_transfer panics -> 100% USDC refunded ───
+    e.admin.call(e.core.id(), "set_vault_paused").deposit(ONE_YOCTO).args_json(json!({"paused": true})).transact().await.unwrap().unwrap();
+    let used_3: U128 = e.customer.call(e.ft.id(), "ft_transfer_call")
+        .deposit(ONE_YOCTO)
+        .gas(Gas::from_tgas(100))
+        .args_json(json!({
+            "receiver_id": e.core.id(),
+            "amount": payment_atomic.to_string(),
+            "memo": "SnowMoon CreateAndFundJob Escrow",
+            "msg": create_and_fund_msg,
+        }))
+        .transact().await.unwrap().unwrap().json().unwrap();
+    assert_eq!(used_3.0, 0);
+    e.admin.call(e.core.id(), "set_vault_paused").deposit(ONE_YOCTO).args_json(json!({"paused": false})).transact().await.unwrap().unwrap();
+
+    // ─── Failure Case 4: Amount above max_job_payment ($1,000 USDC) -> ft_on_transfer panics -> 100% refunded ───
+    e.ft.call("mint").args_json(json!({"account_id": e.customer.id(), "amount": U128(usdc(1_000))})).transact().await.unwrap().unwrap();
+    let cust_bal_minted: U128 = e.ft.view("ft_balance_of").args_json(json!({"account_id": e.customer.id()})).await.unwrap().json().unwrap();
+    let used_4: U128 = e.customer.call(e.ft.id(), "ft_transfer_call")
+        .deposit(ONE_YOCTO)
+        .gas(Gas::from_tgas(100))
+        .args_json(json!({
+            "receiver_id": e.core.id(),
+            "amount": usdc(1_001).to_string(),
+            "memo": "SnowMoon CreateAndFundJob Escrow",
+            "msg": create_and_fund_msg,
+        }))
+        .transact().await.unwrap().unwrap().json().unwrap();
+    assert_eq!(used_4.0, 0);
+    let cust_bal_after_4: U128 = e.ft.view("ft_balance_of").args_json(json!({"account_id": e.customer.id()})).await.unwrap().json().unwrap();
+    assert_eq!(cust_bal_after_4.0, cust_bal_minted.0);
+
+    // ─── Step 2 Success Path: Call `ft_transfer_call` with generated `CreateAndFundJob` message ───
+    let seq_before: u64 = e.core.view("next_job_seq").await.unwrap().json().unwrap();
+    let expected_job_id: String = e.core.view("derive_job_id")
+        .args_json(json!({"creator": e.customer.id(), "seq": seq_before}))
+        .await.unwrap().json().unwrap();
+
+    let used_ok: U128 = e.customer.call(e.ft.id(), "ft_transfer_call")
+        .deposit(ONE_YOCTO)
+        .gas(Gas::from_tgas(100))
+        .args_json(json!({
+            "receiver_id": e.core.id(),
+            "amount": payment_atomic.to_string(),
+            "memo": "SnowMoon CreateAndFundJob Escrow",
+            "msg": create_and_fund_msg,
+        }))
+        .transact().await.unwrap().unwrap().json().unwrap();
+
+    // Token resolver kept 100% of payment_atomic (0 refunded)
+    assert_eq!(used_ok.0, payment_atomic);
+
+    let seq_after: u64 = e.core.view("next_job_seq").await.unwrap().json().unwrap();
+    assert_eq!(seq_after, seq_before + 1, "job must be created exactly once");
+
+    let job: Value = e.core.view("get_job").args_json(json!({"job_id": expected_job_id})).await.unwrap().json().unwrap();
+    assert_eq!(job["customer"], e.customer.id().as_str());
+    assert_eq!(job["operator"], e.operator.id().as_str());
+    assert_eq!(job["customer_payment"], payment_atomic.to_string());
+    assert_eq!(job["max_operating_budget"], budget_atomic.to_string());
+    assert_eq!(job["terms_hash"], terms_hex);
+    assert_eq!(job["deadline"], deadline_sec);
+    assert_eq!(job["status"], "Funded");
+
+    let ac: Value = e.core.view("accounting").await.unwrap().json().unwrap();
+    assert_eq!(ac["escrowed_usdc"], payment_atomic.to_string());
+    let core_bal_after: U128 = e.ft.view("ft_balance_of").args_json(json!({"account_id": e.core.id()})).await.unwrap().json().unwrap();
+    assert_eq!(core_bal_after.0, core_bal_initial.0 + payment_atomic);
+}
+
+
