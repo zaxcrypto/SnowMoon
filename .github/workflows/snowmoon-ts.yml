@@ -1,0 +1,52 @@
+name: SnowMoon TypeScript MVP
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - 'feat/*'
+    paths:
+      - 'snowmoon/**'
+      - '.github/workflows/snowmoon-ts.yml'
+  pull_request:
+    paths:
+      - 'snowmoon/**'
+      - '.github/workflows/snowmoon-ts.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: snowmoon-ts-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  snowmoon-ts:
+    name: TypeScript typecheck, build and SnowMoon integration suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: snowmoon
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: snowmoon/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: TypeScript typecheck
+        run: npm run typecheck
+      - name: Production build check
+        run: npm run build
+      - name: Run SnowMoon MVP & security test suite
+        env:
+          SNOWMOON_AI_MODE: mock
+          SNOWMOON_DB_MODE: json
+        run: npm test
+

@@ -1,0 +1,51 @@
+name: OutLayer TEE Worker (wasm32-wasip2)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - 'feat/*'
+    paths:
+      - 'near/workers/snowmoon-tee-worker/**'
+      - '.github/workflows/outlayer-worker.yml'
+  pull_request:
+    paths:
+      - 'near/workers/snowmoon-tee-worker/**'
+      - '.github/workflows/outlayer-worker.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  outlayer-worker:
+    name: Build & test SnowMoon OutLayer wasm32-wasip2 worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: near/workers/snowmoon-tee-worker
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
+      - name: Run unit tests
+        run: cargo test -- --nocapture
+      - name: Build wasm32-wasip2 release component
+        run: cargo build --target wasm32-wasip2 --release
+      - name: Compute SHA-256 WASM hash for OUTLAYER_EXPECTED_WASM_HASH
+        run: |
+          WASM_PATH=$(ls target/wasm32-wasip2/release/*.wasm | head -n 1)
+          test -n "$WASM_PATH"
+          sha256sum "$WASM_PATH" > SHA256SUMS && cat SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: snowmoon-outlayer-tee-worker
+          path: |
+            near/workers/snowmoon-tee-worker/target/wasm32-wasip2/release/*.wasm
+            near/workers/snowmoon-tee-worker/SHA256SUMS
+          retention-days: 30
+

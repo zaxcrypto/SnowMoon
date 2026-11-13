@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  secret-audit:
+    name: Secret and repository integrity audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify no .env or secret files are tracked
+        run: |
+          if git ls-files | grep -E '(^|/)\.env($|\.)' | grep -v '\.env\.example$'; then
+            echo "ERROR: Tracked .env file detected!"
+            exit 1
+          fi
+      - name: Scan tracked tree for exposed credentials
+        run: |
+          # Fail on private key blocks, live OutLayer keys, or real JWT/API tokens outside test fixtures
+          MATCHES=$(git grep -nE 'BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|pk_live_[A-Za-z0-9]{10,}|eyJ[A-Za-z0-9_-]{25,}\.[A-Za-z0-9_-]{15,}' -- ':(exclude)*.test.ts' ':(exclude)*.md' || true)
+          if [ -n "$MATCHES" ]; then
+            echo "$MATCHES"
+            echo "ERROR: Potential secret detected in tracked files!"
+            exit 1
+          fi
+          echo "Secret audit passed: zero leaked credentials in tracked tree."
+
+  snowmoon-security:
+    name: SnowMoon dependency audit and build verification
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: snowmoon
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: snowmoon/package-lock.json
+      - run: npm ci
+      - run: npm audit --registry=https://registry.npmjs.org
+      - run: npm run typecheck
+      - run: npm run build
