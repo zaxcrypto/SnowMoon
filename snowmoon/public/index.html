@@ -190,58 +190,12 @@
       gap: 8px;
       flex-wrap: wrap;
     }
-    .subbar {
-      display: flex;
-      align-items: center;
-      gap: 18px;
-      padding: 8px 28px 12px;
-      max-width: 1520px;
-      margin: 0 auto;
-      overflow-x: auto;
-    }
-    .subbar-group {
-      display: flex;
-      align-items: center;
-      gap: 16px;
-      flex: none;
-    }
-    .subbar-divider {
-      width: 1px;
-      height: 16px;
-      background: var(--border);
-      flex: none;
-    }
-    .subbar-tab {
-      background: transparent;
-      border: none;
-      color: var(--muted);
-      font-size: 13px;
-      font-weight: 500;
-      cursor: pointer;
-      padding: 4px 2px;
-      white-space: nowrap;
-      transition: color 0.12s;
-    }
-    .subbar-tab:hover { color: var(--text); }
-    .subbar-tab.active {
-      color: var(--text);
-      font-weight: 650;
-    }
-    .subbar-status {
-      display: inline-flex;
-      align-items: center;
-      gap: 7px;
-      font-size: 12.5px;
-      color: var(--text-2);
-      white-space: nowrap;
-    }
-
     .app {
       display: grid;
       grid-template-columns: 236px 1fr;
       max-width: 1520px;
       margin: 0 auto;
-      min-height: calc(100vh - 105px);
+      min-height: calc(100vh - 65px);
     }
 
     /* Left Sidebar (airy curved pill list like world.xyz) */
@@ -252,8 +206,8 @@
       flex-direction: column;
       gap: 8px;
       position: sticky;
-      top: 106px;
-      height: calc(100vh - 106px);
+      top: 65px;
+      height: calc(100vh - 65px);
     }
     .sidebar nav {
       display: flex;
@@ -664,21 +618,6 @@
         </button>
       </div>
     </div>
-    <div class="subbar" aria-label="Quick sections">
-      <div class="subbar-group">
-        <span class="subbar-status"><span class="sidebar-net-dot" id="sidebar-net-dot" aria-hidden="true"></span><span id="sidebar-net-label">Connecting...</span></span>
-      </div>
-      <div class="subbar-divider"></div>
-      <div class="subbar-group">
-        <button class="subbar-tab active" data-subview="overview" onclick="switchView('overview')">Overview</button>
-        <button class="subbar-tab" data-subview="jobs" onclick="switchView('jobs')">Jobs</button>
-        <button class="subbar-tab" data-subview="workforce" onclick="switchView('workforce')">Workforce</button>
-        <button class="subbar-tab" data-subview="approvals" onclick="switchView('approvals')">Approvals</button>
-        <button class="subbar-tab" data-subview="float" onclick="switchView('float')">Float</button>
-        <button class="subbar-tab" data-subview="audit" onclick="switchView('audit')">Audit</button>
-        <button class="subbar-tab" data-subview="settings" onclick="switchView('settings')">Settings</button>
-      </div>
-    </div>
   </header>
 
   <div class="app">
@@ -731,6 +670,10 @@
         </button>
       </nav>
       <div class="sidebar-foot">
+        <div class="sidebar-net" style="margin-bottom: 6px;">
+          <span class="sidebar-net-dot" id="sidebar-net-dot" aria-hidden="true"></span>
+          <span id="sidebar-net-label">Connecting...</span>
+        </div>
         <div style="font-size: 11px; color: var(--muted-2);">
           NEAR Mainnet Escrow &amp; OutLayer TEE
         </div>
@@ -1211,9 +1154,6 @@
     function switchView(viewName) {
       document.querySelectorAll(".nav-link").forEach((el) => {
         el.classList.toggle("active", el.dataset.view === viewName);
-      });
-      document.querySelectorAll(".subbar-tab").forEach((el) => {
-        el.classList.toggle("active", el.dataset.subview === viewName);
       });
       document.querySelectorAll(".view-section").forEach((sec) => {
         sec.classList.toggle("active", sec.id === `view-${viewName}`);
