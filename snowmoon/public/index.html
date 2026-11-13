@@ -645,6 +645,13 @@
           <button onclick="registerWorkforceWorker()">Register Worker</button>
           <button class="btn-secondary" onclick="refreshWorkforceDashboard()">↻ Refresh Workforce, Verification &amp; Settlement</button>
         </div>
+        <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px;">
+          <input id="wf-job-id" type="text" placeholder="0x... (optional auto jobId)" style="max-width:210px;" />
+          <input id="wf-job-caps" type="text" placeholder="research" style="max-width:140px;" />
+          <input id="wf-job-amount" type="text" placeholder="1000000" style="max-width:120px;" />
+          <input id="wf-job-prompt" type="text" placeholder="Task prompt for worker execution" style="flex:1; min-width:220px;" />
+          <button onclick="registerWorkforceJobUi()">Register Job</button>
+        </div>
         <table>
           <thead>
             <tr>
@@ -665,12 +672,12 @@
             <thead>
               <tr>
                 <th>Job ID</th>
-                <th>State</th>
+                <th>State / Recovery</th>
                 <th>Assigned Worker</th>
-                <th>AI Mode / Model</th>
-                <th>Evidence Hash</th>
-                <th>Verification</th>
-                <th>Settlement</th>
+                <th>AI (Outside TEE) vs OutLayer TEE</th>
+                <th>Evidence &amp; Delivery</th>
+                <th>Verification &amp; AuditAnchor</th>
+                <th>Settlement / Refund</th>
                 <th>Actions</th>
               </tr>
             </thead>
@@ -1921,17 +1928,30 @@
       }
     }
 
+    function escapeHtml(val) {
+      return String(val ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
     async function registerWorkforceWorker() {
       try {
         const workerId = (document.getElementById("wf-reg-id").value || "worker-01").trim();
         const accountId = (document.getElementById("wf-reg-account").value || "cryptozax.near").trim();
         const capabilities = (document.getElementById("wf-reg-caps").value || "research,analysis").trim();
-        await apiPost("/api/workforce/workers/register", {
+        const res = await apiPost("/api/workforce/workers/register", {
           workerId,
           accountId,
           displayName: workerId,
           capabilities,
+          issueToken: true,
         });
+        if (res.workerToken) {
+          sessionStorage.setItem(`snowmoon_worker_token_${workerId}`, res.workerToken);
+        }
         showToast(`Registered worker ${workerId}`);
         await refreshWorkforceDashboard();
       } catch (e) {
@@ -1939,9 +1959,84 @@
       }
     }
 
+    async function registerWorkforceJobUi() {
+      try {
+        const rawJobId = (document.getElementById("wf-job-id").value || "").trim();
+        const jobId = rawJobId || ("0x" + Array.from(crypto.getRandomValues(new Uint8Array(32))).map((b) => b.toString(16).padStart(2, "0")).join(""));
+        const requiredCapabilities = (document.getElementById("wf-job-caps").value || "research").trim();
+        const amountAtomic = (document.getElementById("wf-job-amount").value || "1000000").trim();
+        const prompt = (document.getElementById("wf-job-prompt").value || "").trim();
+        const customerAccountId = (connectedMainnetWallet && connectedMainnetWallet.accountId) || "cryptozax.near";
+        await apiPost("/api/workforce/jobs/register", {
+          jobId,
+          customerAccountId,
+          amountAtomic,
+          requiredCapabilities,
+          prompt,
+          funded: true,
+        });
+        showToast(`Registered workforce job ${jobId.slice(0, 12)}…`);
+        await refreshWorkforceDashboard();
+      } catch (e) {
+        showToast("Job register error: " + e.message);
+      }
+    }
+
+    async function assignWorkforceJobUi(jobId) {
+      try {
+        const disc = await apiGet(`/api/workforce/jobs/discover?jobId=${encodeURIComponent(jobId)}`);
+        const candidateId = disc.workers && disc.workers[0] ? disc.workers[0].workerId : undefined;
+        await apiPost("/api/workforce/jobs/assign", { jobId, workerId: candidateId });
+        showToast(`Assigned job ${jobId.slice(0, 12)}…`);
+        await refreshWorkforceDashboard();
+      } catch (e) {
+        showToast("Assign error: " + e.message);
+      }
+    }
+
+    async function reassignWorkforceJobUi(jobId) {
+      try {
+        await apiPost("/api/workforce/jobs/reassign", { jobId });
+        showToast(`Reassigned job ${jobId.slice(0, 12)}…`);
+        await refreshWorkforceDashboard();
+      } catch (e) {
+        showToast("Reassign error: " + e.message);
+      }
+    }
+
+    async function acceptWorkforceJobUi(jobId, workerId) {
+      try {
+        const wToken = sessionStorage.getItem(`snowmoon_worker_token_${workerId}`) || "";
+        const resp = await fetch("/api/workforce/jobs/accept", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            ...(wToken ? { "x-worker-token": wToken } : {}),
+          },
+          body: JSON.stringify({ jobId, workerId }),
+        });
+        const j = await resp.json();
+        if (!resp.ok || !j.ok) throw new Error(j.error || "Accept failed");
+        showToast(`Worker ${workerId} accepted ${jobId.slice(0, 12)}…`);
+        await refreshWorkforceDashboard();
+      } catch (e) {
+        showToast("Accept error: " + e.message);
+      }
+    }
+
     async function executeWorkforceJobUi(jobId, workerId) {
       try {
-        await apiPost("/api/workforce/jobs/execute", { jobId, workerId });
+        const wToken = sessionStorage.getItem(`snowmoon_worker_token_${workerId}`) || "";
+        const resp = await fetch("/api/workforce/jobs/execute", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            ...(wToken ? { "x-worker-token": wToken } : {}),
+          },
+          body: JSON.stringify({ jobId, workerId }),
+        });
+        const j = await resp.json();
+        if (!resp.ok || !j.ok) throw new Error(j.error || "Execute failed");
         showToast(`Executed job ${jobId.slice(0, 12)}…`);
         await refreshWorkforceDashboard();
       } catch (e) {
@@ -1960,10 +2055,10 @@
       }
     }
 
-    async function prepareSettlementUi(jobId) {
+    async function prepareSettlementUi(jobId, kind = "PAYOUT_ACCEPT_DELIVERY") {
       try {
-        const res = await apiPost("/api/settlement/prepare", { jobId, kind: "PAYOUT_ACCEPT_DELIVERY" });
-        showToast(`Prepared unsigned accept_delivery settlement (${res.settlement.settlementId}).`);
+        const res = await apiPost("/api/settlement/prepare", { jobId, kind });
+        showToast(`Prepared unsigned ${kind} (${res.settlement.settlementId}).`);
         await refreshWorkforceDashboard();
       } catch (e) {
         showToast("Settlement prep error: " + e.message);
@@ -1982,12 +2077,12 @@
         wTbody.innerHTML = (wRes.workers && wRes.workers.length)
           ? wRes.workers.map((w) => `
               <tr>
-                <td class="mono">${w.workerId}</td>
-                <td class="mono">${w.accountId}</td>
-                <td class="mono">${w.capabilities.join(", ")}</td>
+                <td class="mono">${escapeHtml(w.workerId)}</td>
+                <td class="mono">${escapeHtml(w.accountId)}</td>
+                <td class="mono">${escapeHtml((w.capabilities || []).join(", "))}</td>
                 <td><span class="badge ${w.available ? "badge-ok" : "badge-sandbox"}">${w.available ? "AVAILABLE" : "PAUSED"}</span></td>
                 <td class="mono">${w.activeJobs} / ${w.completedJobs}</td>
-                <td class="mono">${w.earningsAtomic}</td>
+                <td class="mono">${escapeHtml(w.earningsAtomic)}</td>
               </tr>
             `).join("")
           : `<tr><td colspan="6" style="color:var(--muted);">No workers registered yet.</td></tr>`;
@@ -1999,19 +2094,46 @@
           ? jRes.jobs.map((j) => {
               const ver = verByJob.get(j.jobId);
               const stl = stlByJob.get(j.jobId);
+              const teeBadge = j.outlayerAttestationVerified === true
+                ? `<span class="badge badge-ok">TEE VERIFIED</span>`
+                : j.outlayerStatus === "EXECUTION_FAILED" || j.outlayerStatus === "ATTESTATION_FAILED"
+                ? `<span class="badge badge-danger">${escapeHtml(j.outlayerStatus)}</span>`
+                : j.outlayerStatus
+                ? `<span class="badge badge-sandbox">${escapeHtml(j.outlayerStatus)}</span>`
+                : `<span class="badge badge-sandbox">NOT RUN</span>`;
+              const aiOutsideLabel = j.executionMode
+                ? `AI (Outside TEE): ${escapeHtml(j.executionMode)} (${escapeHtml(j.aiModel || "—")})`
+                : "AI (Outside TEE): —";
+              const teeDetail = j.outlayerCallId
+                ? `<div class="mono" style="font-size:11px;color:var(--muted);">call=${escapeHtml(j.outlayerCallId.slice(0, 12))}…${j.outlayerTaskId ? ` task=#${j.outlayerTaskId}` : ""}${j.outlayerComputeCostMicroUsd ? ` ($${(Number(j.outlayerComputeCostMicroUsd)/1e6).toFixed(4)})` : ""}</div>`
+                : "";
+              const evSummary = j.output && j.output.summary ? `<div style="font-size:11px;color:var(--muted);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(j.output.summary)}</div>` : "";
+              const anchorLine = ver && ver.anchorStatus && ver.anchorStatus !== "NONE"
+                ? `<div class="mono" style="font-size:11px;color:var(--muted);">Anchor: ${escapeHtml(ver.anchorStatus)}${ver.auditTxHash ? ` (${escapeHtml(ver.auditTxHash.slice(0, 10))}…)` : ""}</div>`
+                : "";
+              const stlLine = stl
+                ? `<span class="badge ${stl.status === "CONFIRMED" ? "badge-ok" : stl.status.startsWith("FAILED") ? "badge-danger" : "badge-sandbox"}">${escapeHtml(stl.status)}</span><div class="mono" style="font-size:11px;color:var(--muted);">${escapeHtml(stl.kind)}</div>`
+                : "—";
+              const errLine = j.lastError ? `<div style="font-size:11px;color:#f87171;max-width:180px;">${escapeHtml(j.lastError)}</div>` : "";
               return `
                 <tr>
-                  <td class="mono">${j.jobId.slice(0, 14)}…</td>
-                  <td><span class="badge badge-info">${j.state}</span></td>
-                  <td class="mono">${j.assignedWorkerId || "—"}</td>
-                  <td class="mono">${j.executionMode || "—"} (${j.aiModel || "—"})</td>
-                  <td class="mono">${j.evidenceHash ? j.evidenceHash.slice(0, 14) + "…" : "—"}</td>
-                  <td class="mono">${ver ? ver.verificationStatus : "—"}</td>
-                  <td class="mono">${stl ? stl.status : "—"}</td>
+                  <td class="mono">${escapeHtml(j.jobId.slice(0, 14))}…${j.escrowIntentId ? `<div style="font-size:11px;color:var(--muted);">escrow:${escapeHtml(j.escrowIntentId.slice(0,10))}</div>` : ""}</td>
+                  <td><span class="badge ${j.state === "FAILED" || j.state === "CANCELLED" ? "badge-danger" : j.state === "SETTLED" || j.state === "VERIFIED" ? "badge-ok" : "badge-info"}">${escapeHtml(j.state)}</span>${errLine}</td>
+                  <td class="mono">${escapeHtml(j.assignedWorkerId || "—")}</td>
+                  <td><div class="mono" style="font-size:11px;">${aiOutsideLabel}</div>${teeBadge}${teeDetail}</td>
+                  <td class="mono">${j.evidenceHash ? escapeHtml(j.evidenceHash.slice(0, 14)) + "…" : "—"}${evSummary}</td>
+                  <td class="mono">${ver ? escapeHtml(ver.verificationStatus) : "—"}${anchorLine}</td>
+                  <td>${stlLine}</td>
                   <td style="display:flex;gap:4px;flex-wrap:wrap;">
-                    ${j.state === "ACCEPTED" && j.assignedWorkerId ? `<button style="padding:2px 6px;font-size:11px;" onclick="executeWorkforceJobUi('${j.jobId}','${j.assignedWorkerId}')">Execute</button>` : ""}
-                    ${ver && ver.verificationStatus === "PENDING" ? `<button style="padding:2px 6px;font-size:11px;" onclick="verifyWorkforceJobUi('${j.jobId}','VERIFIED')">Verify</button>` : ""}
-                    ${ver && ver.verificationStatus === "VERIFIED" && !stl ? `<button class="btn-secondary" style="padding:2px 6px;font-size:11px;" onclick="prepareSettlementUi('${j.jobId}')">Prep Payout</button>` : ""}
+                    ${j.state === "FUNDED" ? `<button style="padding:2px 6px;font-size:11px;" onclick="assignWorkforceJobUi('${escapeHtml(j.jobId)}')">Discover &amp; Assign</button>` : ""}
+                    ${j.state === "ASSIGNED" && j.assignedWorkerId ? `<button style="padding:2px 6px;font-size:11px;" onclick="acceptWorkforceJobUi('${escapeHtml(j.jobId)}','${escapeHtml(j.assignedWorkerId)}')">Accept</button><button class="btn-secondary" style="padding:2px 6px;font-size:11px;" onclick="reassignWorkforceJobUi('${escapeHtml(j.jobId)}')">Reassign</button>` : ""}
+                    ${(j.state === "ACCEPTED" || j.state === "FAILED") && j.assignedWorkerId ? `<button style="padding:2px 6px;font-size:11px;" onclick="executeWorkforceJobUi('${escapeHtml(j.jobId)}','${escapeHtml(j.assignedWorkerId)}')">${j.state === "FAILED" ? "Retry" : "Execute"}</button>` : ""}
+                    ${j.state === "FAILED" ? `<button class="btn-secondary" style="padding:2px 6px;font-size:11px;" onclick="reassignWorkforceJobUi('${escapeHtml(j.jobId)}')">Reassign</button>` : ""}
+                    ${ver && ver.verificationStatus === "PENDING" ? `<button style="padding:2px 6px;font-size:11px;" onclick="verifyWorkforceJobUi('${escapeHtml(j.jobId)}','VERIFIED')">Accept Delivery</button><button class="btn-secondary" style="padding:2px 6px;font-size:11px;" onclick="verifyWorkforceJobUi('${escapeHtml(j.jobId)}','REJECTED')">Reject</button>` : ""}
+                    ${ver && ver.verificationStatus === "VERIFIED" && (!ver.anchorStatus || ver.anchorStatus === "NONE" || ver.anchorStatus === "FAILED") ? `<button class="btn-secondary" style="padding:2px 6px;font-size:11px;" onclick="prepareAuditAnchorUi('${escapeHtml(j.jobId)}')">Prep Anchor</button>` : ""}
+                    ${ver && (ver.anchorStatus === "SUBMITTED" || ver.anchorStatus === "PENDING") ? `<button class="btn-secondary" style="padding:2px 6px;font-size:11px;" onclick="reconcileAuditAnchorUi('${escapeHtml(j.jobId)}')">Reconcile Anchor</button>` : ""}
+                    ${ver && ver.verificationStatus === "VERIFIED" && !stl ? `<button class="btn-secondary" style="padding:2px 6px;font-size:11px;" onclick="prepareSettlementUi('${escapeHtml(j.jobId)}','PAYOUT_ACCEPT_DELIVERY')">Prep Payout</button>` : ""}
+                    ${ver && (ver.verificationStatus === "REJECTED" || ver.verificationStatus === "DISPUTED" || ver.verificationStatus === "EXPIRED") && !stl ? `<button class="btn-secondary" style="padding:2px 6px;font-size:11px;" onclick="prepareSettlementUi('${escapeHtml(j.jobId)}','CUSTOMER_REFUND')">Prep Refund</button>` : ""}
                   </td>
                 </tr>
               `;

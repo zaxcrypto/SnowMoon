@@ -29,14 +29,28 @@ export interface OutLayerAttestationChecks {
   details: string;
 }
 
+export interface OutLayerVerificationResult {
+  available: boolean;
+  verified: boolean;
+  command: string;
+  taskId?: number | null;
+  tcbStatus?: string | null;
+  authenticity?: string | null;
+  identity?: string | null;
+  binding?: string | null;
+}
+
 export interface OutLayerExecutionRecord {
   requestId: string;
   callId: string | null;
+  taskId?: number | null;
   jobId: string;
   workerId: string;
+  tenantId?: string | null;
   inputHash: string;
   outputHash: string | null;
   evidenceHash: string;
+  wasmHash?: string | null;
   status: OutLayerExecutionState;
   mode: "live_outlayer" | "mock_fallback";
   output: unknown;
@@ -45,7 +59,10 @@ export interface OutLayerExecutionRecord {
   timeMs: number | null;
   attestationUrl: string | null;
   attestationChecks: OutLayerAttestationChecks | null;
+  verificationResult?: OutLayerVerificationResult | null;
   error: string | null;
+  executedAt?: string | null;
+  verifiedAt?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -59,23 +76,36 @@ export interface OutLayerExecutionRecord {
  * Never exposes X-Payment-Key, never blindly retries ambiguous charged calls, and never marks
  * ATTESTATION_VERIFIED merely because attestation_url exists.
  */
+export type OutLayerVerifyRunner = (txOrCallId: string) => Promise<{
+  available: boolean;
+  verified: boolean;
+  command: string;
+  stdout: string;
+  stderr: string;
+}>;
+
 export class OutLayerExecutionAdapter {
   private readonly config: SnowMoonConfig;
   private readonly fetchImpl: typeof fetch;
   private readonly repo?: SnowMoonRepository;
+  private readonly verifyRunner?: OutLayerVerifyRunner;
   private readonly requests = new Map<string, OutLayerExecutionRecord>();
+  private readonly idempotencyIndex = new Map<string, string>();
 
   constructor(
     config: SnowMoonConfig,
     fetchImpl: typeof fetch = fetch,
-    repo?: SnowMoonRepository
+    repo?: SnowMoonRepository,
+    verifyRunner?: OutLayerVerifyRunner
   ) {
     this.config = config;
     this.fetchImpl = fetchImpl;
     this.repo = repo;
+    this.verifyRunner = verifyRunner;
     if (repo) {
       for (const r of repo.getCollection<OutLayerExecutionRecord>("outlayerCalls")) {
         this.requests.set(r.requestId, r);
+        this.idempotencyIndex.set(`${r.jobId}|${r.workerId}|${r.inputHash}`, r.requestId);
       }
     }
   }
@@ -109,8 +139,17 @@ export class OutLayerExecutionAdapter {
   public validateConfiguration() {
     const missingEnvVars = this.getMissingCredentials();
     const computeLimitNum = Number(this.config.outlayerComputeLimit || "0");
+    const attachedDepositNum = Number(this.config.outlayerAttachedDeposit || "0");
+    const maxPerCallNum = Number(this.config.outlayerMaxPerCallMicroUsd || "0");
     const validComputeLimit = Number.isFinite(computeLimitNum) && computeLimitNum > 0;
-    const readyForLiveExecution = missingEnvVars.length === 0 && validComputeLimit;
+    const withinSpendingCap =
+      validComputeLimit &&
+      Number.isFinite(attachedDepositNum) &&
+      attachedDepositNum >= 0 &&
+      Number.isFinite(maxPerCallNum) &&
+      maxPerCallNum > 0 &&
+      computeLimitNum + attachedDepositNum <= maxPerCallNum;
+    const readyForLiveExecution = missingEnvVars.length === 0 && withinSpendingCap;
     return {
       readyForLiveExecution,
       mode: readyForLiveExecution ? ("live_outlayer" as const) : ("mock_fallback" as const),
@@ -121,6 +160,8 @@ export class OutLayerExecutionAdapter {
       expectedWasmHashConfigured: Boolean(this.config.outlayerExpectedWasmHash),
       computeLimit: this.config.outlayerComputeLimit,
       attachedDeposit: this.config.outlayerAttachedDeposit,
+      maxPerCallMicroUsd: this.config.outlayerMaxPerCallMicroUsd,
+      withinSpendingCap,
       hasPaymentKey: this.config.hasOutlayerPaymentKey,
     };
   }
@@ -128,19 +169,52 @@ export class OutLayerExecutionAdapter {
   public async executeAndVerify(params: {
     jobId: string;
     workerId: string;
+    tenantId?: string;
     prompt: string;
     evidenceHash: string;
+    expectedWasmHash?: string;
+    deliverable?: Record<string, unknown>;
     asyncMode?: boolean;
     timeoutMs?: number;
+    resourceLimits?: {
+      max_instructions?: number;
+      max_memory_mb?: number;
+      max_execution_seconds?: number;
+    };
+    secretsRef?: {
+      profile: string;
+      account_id: string;
+    };
   }): Promise<OutLayerExecutionRecord> {
-    const inputPayload = {
+    const inputPayload: Record<string, unknown> = {
       jobId: params.jobId,
       workerId: params.workerId,
       prompt: params.prompt,
       evidenceHash: params.evidenceHash,
     };
+    if (params.tenantId) {
+      inputPayload.tenantId = params.tenantId;
+    }
+    if (params.deliverable !== undefined) {
+      inputPayload.deliverable = params.deliverable;
+    }
     const inputJson = JSON.stringify(inputPayload);
     const inputHash = "0x" + crypto.createHash("sha256").update(inputJson).digest("hex");
+    const idempotencyKey = `${params.jobId}|${params.workerId}|${inputHash}`;
+    const existingReqId = this.idempotencyIndex.get(idempotencyKey);
+    if (existingReqId) {
+      const existing = this.requests.get(existingReqId);
+      if (
+        existing &&
+        (existing.callId !== null ||
+          existing.status === "EXECUTION_PENDING" ||
+          existing.status === "ATTESTATION_PENDING" ||
+          existing.status === "EXECUTION_COMPLETED" ||
+          existing.status === "ATTESTATION_VERIFIED")
+      ) {
+        return existing;
+      }
+    }
 
     const requestId =
       "ol_" +
@@ -154,11 +228,14 @@ export class OutLayerExecutionAdapter {
     const record: OutLayerExecutionRecord = {
       requestId,
       callId: null,
+      taskId: null,
       jobId: params.jobId,
       workerId: params.workerId,
+      tenantId: params.tenantId ?? null,
       inputHash,
       outputHash: null,
       evidenceHash: params.evidenceHash,
+      wasmHash: this.config.outlayerExpectedWasmHash || null,
       status: "EXECUTION_PENDING",
       mode: "mock_fallback",
       output: null,
@@ -167,11 +244,15 @@ export class OutLayerExecutionAdapter {
       timeMs: null,
       attestationUrl: null,
       attestationChecks: null,
+      verificationResult: null,
       error: null,
+      executedAt: null,
+      verifiedAt: null,
       createdAt: now,
       updatedAt: now,
     };
     this.requests.set(requestId, record);
+    this.idempotencyIndex.set(idempotencyKey, requestId);
 
     const missing = this.getMissingCredentials();
     if (missing.length > 0) {
@@ -186,6 +267,47 @@ export class OutLayerExecutionAdapter {
       record.status = "MOCK_EXECUTION";
       record.mode = "mock_fallback";
       record.error = `OutLayer HTTPS execution mocked: missing ${missing.join(", ")}.`;
+      record.updatedAt = new Date().toISOString();
+      this.persist();
+      return record;
+    }
+
+    // Pre-execution pinned WASM hash verification before making a paid OutLayer call
+    const normHex = (s?: string) => (s || "").trim().toLowerCase().replace(/^0x/, "");
+    const pinnedWasm = normHex(this.config.outlayerExpectedWasmHash);
+    if (params.expectedWasmHash) {
+      if (!/^[0-9a-f]{64}$/.test(pinnedWasm)) {
+        record.status = "EXECUTION_FAILED";
+        record.mode = "live_outlayer";
+        record.error =
+          "ERR_OUTLAYER_PINNED_WASM_MISSING: OUTLAYER_EXPECTED_WASM_HASH must be a 64-hex SHA-256 hash before live TEE execution in production.";
+        record.updatedAt = new Date().toISOString();
+        this.persist();
+        return record;
+      }
+      if (normHex(params.expectedWasmHash) !== pinnedWasm) {
+        record.status = "EXECUTION_FAILED";
+        record.mode = "live_outlayer";
+        record.error =
+          "ERR_OUTLAYER_WASM_PRECHECK_MISMATCH: Requested expectedWasmHash does not match pinned OUTLAYER_EXPECTED_WASM_HASH.";
+        record.updatedAt = new Date().toISOString();
+        this.persist();
+        return record;
+      }
+    }
+
+    const computeLimitBig = BigInt(this.config.outlayerComputeLimit || "0");
+    const attachedDepositBig = BigInt(this.config.outlayerAttachedDeposit || "0");
+    const maxPerCallBig = BigInt(this.config.outlayerMaxPerCallMicroUsd || "0");
+    if (
+      computeLimitBig <= 0n ||
+      attachedDepositBig < 0n ||
+      maxPerCallBig <= 0n ||
+      computeLimitBig + attachedDepositBig > maxPerCallBig
+    ) {
+      record.status = "EXECUTION_FAILED";
+      record.mode = "live_outlayer";
+      record.error = `ERR_OUTLAYER_SPENDING_CAP_EXCEEDED: Requested spend (${(computeLimitBig + attachedDepositBig).toString()} micro-USD) exceeds OUTLAYER_MAX_PER_CALL (${maxPerCallBig.toString()} micro-USD) or is invalid.`;
       record.updatedAt = new Date().toISOString();
       this.persist();
       return record;
@@ -213,6 +335,12 @@ export class OutLayerExecutionAdapter {
     };
     if (this.config.outlayerVersionKey) {
       bodyPayload.version_key = this.config.outlayerVersionKey;
+    }
+    if (params.resourceLimits) {
+      bodyPayload.resource_limits = params.resourceLimits;
+    }
+    if (params.secretsRef) {
+      bodyPayload.secrets_ref = params.secretsRef;
     }
 
     const controller = new AbortController();
@@ -281,6 +409,7 @@ export class OutLayerExecutionAdapter {
         typeof data.output === "string" ? data.output : JSON.stringify(data.output ?? null);
       record.outputHash =
         "0x" + crypto.createHash("sha256").update(outSerialized).digest("hex");
+      record.executedAt = new Date().toISOString();
       record.status = record.attestationUrl ? "ATTESTATION_PENDING" : "EXECUTION_COMPLETED";
       record.updatedAt = new Date().toISOString();
       this.persist();
@@ -419,18 +548,25 @@ export class OutLayerExecutionAdapter {
         rtmr2?: string;
         rtmr3?: string;
         job_id?: string;
+        expires_at?: string;
         collateral?: {
           pck_cert_chain?: string;
           tcb_info?: string;
           qe_identity?: string;
           next_update?: string;
+          valid_until?: string;
         };
       };
 
       const norm = (s?: string) => (s || "").trim().toLowerCase().replace(/^0x/, "");
+      const attWasmHex = norm(att.wasm_hash);
+      if (attWasmHex) {
+        record.wasmHash = attWasmHex;
+      }
       const wasmOk = this.config.outlayerExpectedWasmHash
-        ? norm(att.wasm_hash) === norm(this.config.outlayerExpectedWasmHash)
-        : Boolean(att.wasm_hash && norm(att.wasm_hash).length === 64);
+        ? attWasmHex === norm(this.config.outlayerExpectedWasmHash)
+        : !this.config.isProductionMode &&
+          Boolean(att.wasm_hash && attWasmHex.length === 64);
       const inputOk = Boolean(att.input_hash && norm(att.input_hash) === norm(record.inputHash));
       const outputOk = Boolean(
         att.output_hash && record.outputHash && norm(att.output_hash) === norm(record.outputHash)
@@ -449,19 +585,77 @@ export class OutLayerExecutionAdapter {
 
       let collateralVerified = false;
       let collateralInvalid = false;
+      if (att.expires_at && Date.parse(att.expires_at) <= Date.now()) {
+        collateralInvalid = true;
+      }
       if (att.collateral) {
         const hasChain = Boolean(att.collateral.pck_cert_chain && att.collateral.tcb_info);
-        const notExpired = att.collateral.next_update
-          ? Date.parse(att.collateral.next_update) > Date.now()
-          : true;
+        const expiryIso = att.collateral.next_update || att.collateral.valid_until;
+        const notExpired = expiryIso ? Date.parse(expiryIso) > Date.now() : true;
         collateralVerified = hasChain && notExpired;
-        collateralInvalid = !collateralVerified;
+        if (!collateralVerified) collateralInvalid = true;
       }
 
-      const jobBindingVerified = att.job_id ? att.job_id === record.jobId : true;
-      const allVerified =
+      const outputObj =
+        record.output && typeof record.output === "object"
+          ? (record.output as Record<string, unknown>)
+          : null;
+      const outputJobOk =
+        outputObj && typeof outputObj.jobId === "string"
+          ? outputObj.jobId === record.jobId
+          : true;
+      const jobBindingVerified = (att.job_id ? att.job_id === record.jobId : true) && outputJobOk;
+      const allStructuralVerified =
         wasmOk && inputOk && outputOk && tdxOk && measOk && !collateralInvalid && jobBindingVerified;
       const verifyCmd = this.getIndependentVerifyCommand(record.callId || record.requestId);
+
+      let cryptographicRootOfTrustVerified = false;
+      let independentDetails = "";
+      if (allStructuralVerified && (this.config.isProductionMode || this.verifyRunner)) {
+        const cliRes = this.verifyRunner
+          ? await this.verifyRunner(record.callId || record.requestId)
+          : await this.runIndependentOutlayerVerify(record.callId || record.requestId);
+        cryptographicRootOfTrustVerified = cliRes.available && cliRes.verified;
+        let parsedJson: {
+          task_id?: number;
+          tcb_status?: string;
+          authenticity?: { verdict?: string };
+          identity?: { verdict?: string };
+          binding?: { verdict?: string };
+        } | null = null;
+        try {
+          if (cliRes.stdout && cliRes.stdout.trim().startsWith("{")) {
+            parsedJson = JSON.parse(cliRes.stdout);
+          }
+        } catch {
+          parsedJson = null;
+        }
+        if (parsedJson && typeof parsedJson.task_id === "number") {
+          record.taskId = parsedJson.task_id;
+        }
+        record.verificationResult = {
+          available: cliRes.available,
+          verified: cliRes.verified,
+          command: cliRes.command,
+          taskId: parsedJson?.task_id ?? record.taskId ?? null,
+          tcbStatus: parsedJson?.tcb_status ?? null,
+          authenticity: parsedJson?.authenticity?.verdict ?? null,
+          identity: parsedJson?.identity?.verdict ?? null,
+          binding: parsedJson?.binding?.verdict ?? null,
+        };
+        if (!cryptographicRootOfTrustVerified) {
+          independentDetails = cliRes.available
+            ? `ERR_INDEPENDENT_TEE_VERIFY_FAILED: outlayer-verify failed (${cliRes.stderr || cliRes.stdout || "non-zero exit"}).`
+            : `ERR_INDEPENDENT_TEE_VERIFY_UNAVAILABLE: ${cliRes.stderr}`;
+        }
+      }
+
+      const mustPassCli = this.config.isProductionMode || Boolean(this.verifyRunner);
+      const finalVerified =
+        allStructuralVerified && (!mustPassCli || cryptographicRootOfTrustVerified);
+      if (finalVerified) {
+        record.verifiedAt = new Date().toISOString();
+      }
 
       record.attestationChecks = {
         wasmHashVerified: wasmOk,
@@ -472,18 +666,22 @@ export class OutLayerExecutionAdapter {
         workerMeasurementPresent: measOk,
         fiveMeasurementsPresent,
         collateralVerified,
-        cryptographicRootOfTrustVerified: false,
+        cryptographicRootOfTrustVerified,
         jobBindingVerified,
         outlayerVerifyCommand: verifyCmd,
-        details: allVerified
-          ? collateralVerified
+        details: finalVerified
+          ? cryptographicRootOfTrustVerified
+            ? "WASM hash, input/output hashes, TDX quote, worker measurement, and independent outlayer-verify Intel DCAP root-of-trust verified."
+            : collateralVerified
             ? "WASM hash, input/output hashes, TDX quote, worker measurement, and Intel collateral verified (run outlayer-verify CLI for independent Intel DCAP signature verification)."
             : "WASM hash, input/output hashes, TDX quote, and worker measurement verified (full Intel TDX collateral not included in response; run outlayer-verify CLI for independent root-of-trust check)."
-          : "Attestation check incomplete, expired, or mismatched.",
+          : independentDetails || "Attestation check incomplete, expired, or mismatched.",
       };
-      record.status = allVerified ? "ATTESTATION_VERIFIED" : "ATTESTATION_FAILED";
-      if (!allVerified) {
-        record.error = "ERR_ATTESTATION_VERIFICATION_FAILED: One or more TEE attestation checks failed.";
+      record.status = finalVerified ? "ATTESTATION_VERIFIED" : "ATTESTATION_FAILED";
+      if (!finalVerified) {
+        record.error =
+          independentDetails ||
+          "ERR_ATTESTATION_VERIFICATION_FAILED: One or more TEE attestation checks failed.";
       }
       record.updatedAt = new Date().toISOString();
       this.persist();
@@ -497,16 +695,19 @@ export class OutLayerExecutionAdapter {
     }
   }
 
-  public getIndependentVerifyCommand(txOrCallId: string): string {
+  public getIndependentVerifyCommand(txOrCallId: string, kind: "call" | "tx" = "call"): string {
     const base = this.config.outlayerBaseUrl.replace(/\/+$/, "");
-    return `outlayer-verify tx ${txOrCallId.trim()} --api ${base}`;
+    return `outlayer-verify ${kind} ${txOrCallId.trim()} --api ${base}`;
   }
 
   /**
    * Attempts to run the official independent `outlayer-verify` CLI if installed on PATH.
    * Safe via execFile (no shell interpolation). Reports available: false when not installed.
    */
-  public async runIndependentOutlayerVerify(txOrCallId: string): Promise<{
+  public async runIndependentOutlayerVerify(
+    txOrCallId: string,
+    kind: "call" | "tx" = "call"
+  ): Promise<{
     available: boolean;
     verified: boolean;
     command: string;
@@ -518,12 +719,12 @@ export class OutLayerExecutionAdapter {
       throw new Error("ERR_INVALID_VERIFY_ID: Invalid characters in transaction or call ID.");
     }
     const base = this.config.outlayerBaseUrl.replace(/\/+$/, "");
-    const command = `outlayer-verify tx ${cleanId} --api ${base}`;
+    const command = `outlayer-verify ${kind} ${cleanId} --api ${base}`;
     const execFileAsync = promisify(execFile);
     try {
       const { stdout, stderr } = await execFileAsync(
         "outlayer-verify",
-        ["tx", cleanId, "--api", base],
+        [kind, cleanId, "--api", base, "--json"],
         { timeout: 15_000 }
       );
       return { available: true, verified: true, command, stdout, stderr };

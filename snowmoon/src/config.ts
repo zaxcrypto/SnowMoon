@@ -68,6 +68,7 @@ export interface SnowMoonConfig {
   outlayerVersionKey: string;
   outlayerComputeLimit: string;
   outlayerAttachedDeposit: string;
+  outlayerMaxPerCallMicroUsd: string;
   outlayerExpectedWasmHash: string;
   hasOutlayerPaymentKey: boolean;
   oneClickApiBaseUrl: string;
@@ -217,6 +218,7 @@ export function loadConfig(envOverrides?: Record<string, string | undefined>): S
     outlayerVersionKey: (env.OUTLAYER_VERSION_KEY || "").trim(),
     outlayerComputeLimit: (env.OUTLAYER_COMPUTE_LIMIT || "10000").trim(),
     outlayerAttachedDeposit: (env.OUTLAYER_ATTACHED_DEPOSIT || "0").trim(),
+    outlayerMaxPerCallMicroUsd: (env.OUTLAYER_MAX_PER_CALL || "100000").trim(),
     outlayerExpectedWasmHash: (env.OUTLAYER_EXPECTED_WASM_HASH || "").trim().toLowerCase(),
     hasOutlayerPaymentKey: (env.OUTLAYER_PAYMENT_KEY || "").trim().length > 0,
     oneClickApiBaseUrl: (env.NEAR_INTENTS_1CLICK_URL || "https://1click.chaindefuser.com").replace(/\/+$/, ""),

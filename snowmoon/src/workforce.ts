@@ -1,7 +1,11 @@
 import crypto from "node:crypto";
 import type { AIWorkerAdapter } from "./adapters.ts";
 import type { AITokenUsage, JobRecord } from "./engine.ts";
-import type { OutLayerExecutionAdapter } from "./outlayer.ts";
+import type {
+  OutLayerExecutionAdapter,
+  OutLayerExecutionState,
+  OutLayerVerificationResult,
+} from "./outlayer.ts";
 import type { SnowMoonRepository } from "./persistence.ts";
 
 export type WorkforceLifecycleState =
@@ -13,6 +17,7 @@ export type WorkforceLifecycleState =
   | "DELIVERED"
   | "VERIFIED"
   | "SETTLED"
+  | "REFUNDED"
   | "FAILED"
   | "CANCELLED";
 
@@ -33,6 +38,8 @@ export interface WorkerProfile {
 export interface WorkforceJobExecution {
   jobId: string;
   customerAccountId: string;
+  tenantId?: string | null;
+  escrowIntentId?: string | null;
   amountAtomic: string;
   requiredCapabilities: string[];
   prompt: string;
@@ -49,6 +56,22 @@ export interface WorkforceJobExecution {
   aiTokenUsage: AITokenUsage | null;
   outlayerRequestId: string | null;
   outlayerMode: "live_outlayer" | "mock_fallback" | null;
+  outlayerStatus?: OutLayerExecutionState | null;
+  outlayerCallId?: string | null;
+  outlayerTaskId?: number | null;
+  outlayerWasmHash?: string | null;
+  outlayerAttestationUrl?: string | null;
+  outlayerComputeCostMicroUsd?: string | null;
+  outlayerAttestationVerified?: boolean;
+  outlayerVerificationResult?: OutLayerVerificationResult | null;
+  outlayerExecutedAt?: string | null;
+  outlayerVerifiedAt?: string | null;
+  executionBoundary?: {
+    aiInferenceOutsideTee: boolean;
+    aiInferenceMode: "live_near_ai" | "mock_fallback" | null;
+    teeExecutionMode: "live_outlayer" | "mock_fallback" | null;
+    teeVerified: boolean;
+  };
   output: Record<string, unknown> | null;
   evidenceHash: string | null;
   lastError: string | null;
@@ -176,6 +199,8 @@ export class WorkforceEngine {
   public registerJob(params: {
     jobId: string;
     customerAccountId: string;
+    tenantId?: string;
+    escrowIntentId?: string;
     amountAtomic: string;
     requiredCapabilities: string[];
     prompt: string;
@@ -183,12 +208,24 @@ export class WorkforceEngine {
     funded?: boolean;
   }): WorkforceJobExecution {
     const existing = this.jobs.get(params.jobId);
-    if (existing) return existing;
+    if (existing) {
+      if (params.funded && existing.state === "CREATED") {
+        existing.state = "FUNDED";
+        existing.updatedAt = new Date().toISOString();
+      }
+      if (params.escrowIntentId && !existing.escrowIntentId) {
+        existing.escrowIntentId = params.escrowIntentId;
+      }
+      this.persist();
+      return existing;
+    }
     const inputHash =
       "0x" + crypto.createHash("sha256").update(params.prompt).digest("hex");
     const job: WorkforceJobExecution = {
       jobId: params.jobId,
       customerAccountId: params.customerAccountId,
+      tenantId: params.tenantId ?? params.customerAccountId,
+      escrowIntentId: params.escrowIntentId ?? null,
       amountAtomic: params.amountAtomic,
       requiredCapabilities: params.requiredCapabilities.map((c) => c.trim().toLowerCase()),
       prompt: params.prompt,
@@ -215,7 +252,7 @@ export class WorkforceEngine {
     return job;
   }
 
-  public matchWorkerForJob(jobId: string): WorkerProfile | null {
+  public discoverWorkersForJob(jobId: string): WorkerProfile[] {
     const job = this.jobs.get(jobId);
     if (!job) throw new Error(`ERR_UNKNOWN_JOB: ${jobId}`);
     const candidates = Array.from(this.workers.values()).filter((w) => {
@@ -223,7 +260,11 @@ export class WorkforceEngine {
       return job.requiredCapabilities.every((cap) => w.capabilities.includes(cap));
     });
     candidates.sort((a, b) => a.activeJobs - b.activeJobs);
-    return candidates[0] ?? null;
+    return candidates;
+  }
+
+  public matchWorkerForJob(jobId: string): WorkerProfile | null {
+    return this.discoverWorkersForJob(jobId)[0] ?? null;
   }
 
   public assignJob(jobId: string, workerId?: string): WorkforceJobExecution {
@@ -315,7 +356,10 @@ export class WorkforceEngine {
     const job = this.jobs.get(jobId);
     if (!job) throw new Error(`ERR_UNKNOWN_JOB: ${jobId}`);
     if (
-      (nextState === "SETTLED" || nextState === "FAILED" || nextState === "CANCELLED") &&
+      (nextState === "SETTLED" ||
+        nextState === "REFUNDED" ||
+        nextState === "FAILED" ||
+        nextState === "CANCELLED") &&
       job.assignedWorkerId
     ) {
       const w = this.workers.get(job.assignedWorkerId);
@@ -342,6 +386,7 @@ export class WorkforceEngine {
     workerId: string;
     aiAdapter: AIWorkerAdapter;
     outlayerAdapter?: OutLayerExecutionAdapter;
+    requireLiveOutlayer?: boolean;
     maxRetries?: number;
     timeoutMs?: number;
   }): Promise<WorkforceJobExecution> {
@@ -427,17 +472,63 @@ export class WorkforceEngine {
             "0x" + crypto.createHash("sha256").update(canonical).digest("hex");
 
           if (params.outlayerAdapter) {
+            const olCfg = params.outlayerAdapter.validateConfiguration();
+            if (params.requireLiveOutlayer && !olCfg.expectedWasmHashConfigured) {
+              throw new Error(
+                "ERR_OUTLAYER_PINNED_WASM_MISSING: Refusing live OutLayer execution without pinned OUTLAYER_EXPECTED_WASM_HASH."
+              );
+            }
             const olRes = await params.outlayerAdapter.executeAndVerify({
               jobId: job.jobId,
               workerId: params.workerId,
+              tenantId: job.tenantId ?? job.customerAccountId,
               prompt: job.prompt,
               evidenceHash,
+              deliverable: structuredOutput,
             });
             job.outlayerRequestId = olRes.requestId;
             job.outlayerMode = olRes.mode;
+            job.outlayerStatus = olRes.status;
+            job.outlayerCallId = olRes.callId;
+            job.outlayerTaskId = olRes.taskId ?? null;
+            job.outlayerWasmHash = olRes.wasmHash ?? null;
+            job.outlayerAttestationUrl = olRes.attestationUrl;
+            job.outlayerComputeCostMicroUsd = olRes.computeCostMicroUsd;
+            job.outlayerVerificationResult = olRes.verificationResult ?? null;
+            job.outlayerExecutedAt = olRes.executedAt ?? null;
+            job.outlayerVerifiedAt = olRes.verifiedAt ?? null;
+            const structuralVerified = Boolean(
+              olRes.attestationChecks?.wasmHashVerified &&
+                olRes.attestationChecks?.inputHashVerified &&
+                olRes.attestationChecks?.outputHashVerified &&
+                olRes.attestationChecks?.tdxQuotePresent &&
+                olRes.attestationChecks?.workerMeasurementPresent &&
+                olRes.attestationChecks?.jobBindingVerified
+            );
+            job.outlayerAttestationVerified =
+              olRes.status === "ATTESTATION_VERIFIED" && structuralVerified;
+            if (params.requireLiveOutlayer && olRes.mode !== "live_outlayer") {
+              throw new Error(
+                `ERR_OUTLAYER_MOCK_FORBIDDEN_IN_PRODUCTION: Expected live_outlayer TEE execution, got ${olRes.mode}.`
+              );
+            }
+            if (
+              olRes.mode === "live_outlayer" &&
+              (olRes.status !== "ATTESTATION_VERIFIED" || !job.outlayerAttestationVerified)
+            ) {
+              throw new Error(
+                `ERR_OUTLAYER_TEE_FAILED (${olRes.status}): ${olRes.error || "TEE execution or attestation verification did not complete with ATTESTATION_VERIFIED."}`
+              );
+            }
           }
 
           job.executionMode = aiResult.adapterMode === "near_ai" ? "live_near_ai" : "mock_fallback";
+          job.executionBoundary = {
+            aiInferenceOutsideTee: true,
+            aiInferenceMode: job.executionMode,
+            teeExecutionMode: job.outlayerMode,
+            teeVerified: Boolean(job.outlayerAttestationVerified),
+          };
           job.aiModel = aiResult.model;
           job.aiTokenUsage = aiResult.tokenUsage ?? null;
           job.output = structuredOutput;

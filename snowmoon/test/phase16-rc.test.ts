@@ -62,7 +62,7 @@ test("35. Phase 16 AuditAnchor duplicate-anchor guard, AIWorkerAdapter.probeProv
   );
   const cliRes = await ol.runIndependentOutlayerVerify("call_test_16");
   assert.equal(typeof cliRes.available, "boolean");
-  assert.ok(cliRes.command.includes("outlayer-verify tx call_test_16"));
+  assert.ok(cliRes.command.includes("outlayer-verify call call_test_16"));
 });
 
 test("36. Phase 16 Aggregate /api/health and /api/ai/status endpoints leak zero secrets", async () => {

@@ -6,6 +6,7 @@ export interface PersistedSnowMoonData {
   customers: Record<string, unknown>[];
   workers: Record<string, unknown>[];
   workforceJobs: Record<string, unknown>[];
+  escrowJobs: Record<string, unknown>[];
   intents: Record<string, unknown>[];
   outlayerCalls: Record<string, unknown>[];
   verifications: Record<string, unknown>[];
@@ -19,6 +20,7 @@ const EMPTY_DATA: PersistedSnowMoonData = {
   customers: [],
   workers: [],
   workforceJobs: [],
+  escrowJobs: [],
   intents: [],
   outlayerCalls: [],
   verifications: [],
@@ -108,6 +110,7 @@ export class JsonFileDatabaseAdapter implements DatabaseAdapter {
         customers: Array.isArray(parsed.customers) ? parsed.customers : [],
         workers: Array.isArray(parsed.workers) ? parsed.workers : [],
         workforceJobs: Array.isArray(parsed.workforceJobs) ? parsed.workforceJobs : [],
+        escrowJobs: Array.isArray(parsed.escrowJobs) ? parsed.escrowJobs : [],
         intents: Array.isArray(parsed.intents) ? parsed.intents : [],
         outlayerCalls: Array.isArray(parsed.outlayerCalls) ? parsed.outlayerCalls : [],
         verifications: Array.isArray(parsed.verifications) ? parsed.verifications : [],

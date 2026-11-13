@@ -53,3 +53,7 @@
 - If initialization fails before live anchors exist, re-deploy `snapfall_audit.wasm` with the `audit.cryptozax.near` FullAccess key or call `DeleteAccount` with beneficiary `cryptozax.near` to recover remaining NEAR.
 - Never call `DeleteAccount` after production audit records have been anchored.
 
+### Operational Monitoring (Phase 23)
+- Monitor `GET /api/health` and `GET /api/metrics` for `uptimeSec`, `requestsTotal`, `errors4xx`, `errors5xx`, `rateLimited`, and pending/failed recovery counters (`pendingEscrows`, `pendingAnchors`, `failedAnchors`, `pendingSettlements`, `failedSettlements`, `failedOutlayerCalls`).
+- Correlate structured JSON logs using the `X-Request-Id` response header (`correlationId`).
+

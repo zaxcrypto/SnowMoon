@@ -59,10 +59,12 @@ Never commit `.env` or expose server-side secrets to frontend bundles.
 
 ---
 
-## 6. Controlled Launch Checklist
-- [ ] `001_initial_schema` & `002_rls_hardening` verified in Supabase (`rlsHardened: true`).
-- [ ] `OUTLAYER_PAYMENT_KEY`, `OUTLAYER_PROJECT_OWNER`, `OUTLAYER_PROJECT_NAME`, `OUTLAYER_EXPECTED_WASM_HASH` configured.
-- [ ] `cryptozax.near` funded (`>= 2.00 NEAR` + gas) and `audit.cryptozax.near` deployed & verified.
-- [ ] `npm run typecheck && npm run build && npm test` passed on release commit.
-- [ ] Owner explicitly unpauses `core.cryptozax.near` (`vault_paused: false`) for canary job.
+## 6. Controlled Launch Checklist & Phase 23 Observability
+- [x] `001_initial_schema` & `002_rls_hardening` verified in Supabase (`rlsHardened: true`).
+- [x] `OUTLAYER_PAYMENT_KEY`, `OUTLAYER_PROJECT_OWNER`, `OUTLAYER_PROJECT_NAME`, `OUTLAYER_EXPECTED_WASM_HASH` configured (`outlayer-verify` CLI installed and verified).
+- [x] `core.cryptozax.near` and `audit.cryptozax.near` verified via read-only Mainnet RPC (`vault_paused: true`, `pool_paused: true` safe default).
+- [x] Observability & hardening active: `GET /api/health`, `GET /api/metrics`, `X-Request-Id` correlation IDs, separate read (`1200/min`) vs mutation (`120/min`) rate buckets, static security headers (`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`), and `path.relative` traversal guard.
+- [x] `npm audit --registry=https://registry.npmjs.org` (0 vulnerabilities), `npm run typecheck`, `npm run build`, and `npm test` (51/51 tests including 1,000-concurrency & race-condition tests) passed.
+- [ ] Complete live Chrome DevTools browser pass once remote debugging (`chrome://inspect/#remote-debugging`) is enabled.
+- [ ] Owner explicitly unpauses `core.cryptozax.near` (`vault_paused: false`) for canary job when ready for Mainnet launch.
 

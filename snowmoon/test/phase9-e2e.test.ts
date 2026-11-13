@@ -341,7 +341,8 @@ test("21. Phase 9.3 OutLayer HTTPS execution & TEE attestation: verifies valid a
 
   // Invalid wasm_hash -> ATTESTATION_FAILED
   attestationMode = "bad_hash";
-  const badRec = await ol.executeAndVerify({
+  const olBadHash = new OutLayerExecutionAdapter(baseCfg, mockFetch);
+  const badRec = await olBadHash.executeAndVerify({
     jobId,
     workerId: "w1",
     prompt,
@@ -351,7 +352,8 @@ test("21. Phase 9.3 OutLayer HTTPS execution & TEE attestation: verifies valid a
 
   // Missing TDX quote -> ATTESTATION_FAILED
   attestationMode = "missing_quote";
-  const noQuoteRec = await ol.executeAndVerify({
+  const olNoQuote = new OutLayerExecutionAdapter(baseCfg, mockFetch);
+  const noQuoteRec = await olNoQuote.executeAndVerify({
     jobId,
     workerId: "w1",
     prompt,

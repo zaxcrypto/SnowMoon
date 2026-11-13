@@ -8,6 +8,7 @@ import {
   type PreparedNearTransaction,
 } from "./near_rpc.ts";
 import { assertValidTxHash } from "./mainnet_escrow.ts";
+import type { SnowMoonRepository } from "./persistence.ts";
 import type { VerificationStatus } from "./verification.ts";
 
 export type SettlementKind = "PAYOUT_ACCEPT_DELIVERY" | "CUSTOMER_REFUND";
@@ -21,6 +22,7 @@ export type SettlementStatus =
 
 export interface SettlementRecord {
   settlementId: string;
+  idempotencyKey?: string;
   jobId: string;
   kind: SettlementKind;
   customerAccountId: string;
@@ -81,6 +83,29 @@ export class SettlementEngine {
   private readonly jobToSettlement = new Map<string, string>();
   private readonly txToSettlement = new Map<string, string>();
   private readonly history: PaymentHistoryEntry[] = [];
+  private readonly repo?: SnowMoonRepository;
+
+  constructor(repo?: SnowMoonRepository) {
+    this.repo = repo;
+    if (repo) {
+      for (const rec of repo.getCollection<SettlementRecord>("settlements")) {
+        this.records.set(rec.settlementId, rec);
+        this.jobToSettlement.set(rec.jobId, rec.settlementId);
+        if (rec.txHash) {
+          this.txToSettlement.set(rec.txHash, rec.settlementId);
+        }
+        if (rec.status === "CONFIRMED" || rec.status === "FAILED" || rec.status === "FAILED_CALLBACK_RECOVERABLE") {
+          this.appendHistory(rec);
+        }
+      }
+    }
+  }
+
+  private persist(): void {
+    if (this.repo) {
+      this.repo.saveCollection("settlements", Array.from(this.records.values()));
+    }
+  }
 
   public listSettlements(): SettlementRecord[] {
     return Array.from(this.records.values()).sort((a, b) =>
@@ -128,12 +153,25 @@ export class SettlementEngine {
     }
 
     const existingId = this.jobToSettlement.get(jobId);
+    const idempotencyKey = crypto
+      .createHash("sha256")
+      .update(`${jobId}|${params.kind}|${customer}|${worker}|${params.grossAmountAtomic}|${params.platformFeeBps ?? 0}`)
+      .digest("hex")
+      .slice(0, 24);
     if (existingId) {
       const existing = this.records.get(existingId);
       if (existing && (existing.status === "CONFIRMED" || existing.status === "PENDING")) {
         throw new Error(
           `ERR_DUPLICATE_PAYOUT: Job ${jobId} already has settlement ${existing.settlementId} in status ${existing.status}.`
         );
+      }
+      if (
+        existing &&
+        existing.status === "PREPARED" &&
+        existing.kind === params.kind &&
+        existing.idempotencyKey === idempotencyKey
+      ) {
+        return existing;
       }
     }
 
@@ -172,6 +210,7 @@ export class SettlementEngine {
     const now = new Date().toISOString();
     const record: SettlementRecord = {
       settlementId,
+      idempotencyKey,
       jobId,
       kind: params.kind,
       customerAccountId: customer,
@@ -193,6 +232,7 @@ export class SettlementEngine {
 
     this.records.set(settlementId, record);
     this.jobToSettlement.set(jobId, settlementId);
+    this.persist();
     return record;
   }
 
@@ -233,6 +273,7 @@ export class SettlementEngine {
     record.actionableError = null;
     record.updatedAt = new Date().toISOString();
     this.txToSettlement.set(txHash, record.settlementId);
+    this.persist();
     return record;
   }
 
@@ -249,7 +290,8 @@ export class SettlementEngine {
       throw new Error(`ERR_SETTLEMENT_NOT_FOUND: ${params.settlementId}`);
     }
 
-    const rpcRes = await nearRpc.queryTransactionStatus(txHash, record.customerAccountId);
+    try {
+      const rpcRes = await nearRpc.queryTransactionStatus(txHash, record.customerAccountId);
     record.txHash = txHash;
     record.updatedAt = new Date().toISOString();
     this.txToSettlement.set(txHash, record.settlementId);
@@ -306,6 +348,9 @@ export class SettlementEngine {
     record.actionableError = null;
     this.appendHistory(record);
     return record;
+    } finally {
+      this.persist();
+    }
   }
 
   /**

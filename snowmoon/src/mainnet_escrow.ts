@@ -4,6 +4,7 @@ import {
   JOB_STORAGE_DEPOSIT_INITIAL,
   STORAGE_REGISTRATION,
 } from "./engine.ts";
+import type { SnowMoonRepository } from "./persistence.ts";
 import {
   assertValidNearAccountId,
   normalizeHex32Lowercase,
@@ -348,6 +349,25 @@ export async function prepareCustomerStorageRegistration(
 export class MainnetEscrowTracker {
   private readonly records = new Map<string, MainnetEscrowJobRecord>();
   private readonly txToIntent = new Map<string, string>();
+  private readonly repo?: SnowMoonRepository;
+
+  constructor(repo?: SnowMoonRepository) {
+    this.repo = repo;
+    if (repo) {
+      for (const rec of repo.getCollection<MainnetEscrowJobRecord>("escrowJobs")) {
+        this.records.set(rec.intentId, rec);
+        if (rec.sourceTxHash) {
+          this.txToIntent.set(rec.sourceTxHash, rec.intentId);
+        }
+      }
+    }
+  }
+
+  private persist(): void {
+    if (this.repo) {
+      this.repo.saveCollection("escrowJobs", Array.from(this.records.values()));
+    }
+  }
 
   public listRecords(): MainnetEscrowJobRecord[] {
     return Array.from(this.records.values()).sort((a, b) =>
@@ -550,6 +570,7 @@ export class MainnetEscrowTracker {
     };
 
     this.records.set(intentId, record);
+    this.persist();
 
     return {
       canBroadcastNow: !customerState.vaultPaused,
@@ -612,6 +633,7 @@ export class MainnetEscrowTracker {
     record.deliveryAndSettlementStatus = "Submitted to NEAR Mainnet; awaiting finality";
     record.updatedAt = new Date().toISOString();
     this.txToIntent.set(txHash, record.intentId);
+    this.persist();
     return record;
   }
 
@@ -640,7 +662,8 @@ export class MainnetEscrowTracker {
       throw new Error(`ERR_INTENT_NOT_FOUND: Unknown escrow intent ${resolvedIntentId}`);
     }
 
-    const rpcRes = await nearRpc.queryTransactionStatus(txHash, customer);
+    try {
+      const rpcRes = await nearRpc.queryTransactionStatus(txHash, customer);
     const now = new Date().toISOString();
     record.sourceTxHash = txHash;
     record.updatedAt = now;
@@ -784,6 +807,9 @@ export class MainnetEscrowTracker {
     record.actionableError = null;
     record.deliveryAndSettlementStatus = `On-chain Job ${onChainJob.status || "Funded"} (payment=${onChainJob.customer_payment || record.amountAtomic})`;
     return record;
+    } finally {
+      this.persist();
+    }
   }
 }
 

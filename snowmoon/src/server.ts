@@ -21,7 +21,7 @@ import {
   verifyMainnetWalletSession,
   WalletSessionManager,
 } from "./mainnet_escrow.ts";
-import { OutLayerExecutionAdapter } from "./outlayer.ts";
+import { OutLayerExecutionAdapter, type OutLayerVerifyRunner } from "./outlayer.ts";
 import { WorkforceEngine } from "./workforce.ts";
 import { VerificationEngine } from "./verification.ts";
 import { SettlementEngine } from "./settlement.ts";
@@ -42,6 +42,7 @@ export const PRODUCTION_ROUTE_POLICY = {
   productionAllowedRoutes: {
     publicReadOnly: [
       "/api/health",
+      "/api/metrics",
       "/api/database/health",
       "/api/state",
       "/api/routes/policy",
@@ -60,6 +61,7 @@ export const PRODUCTION_ROUTE_POLICY = {
       "/api/intents/status",
       "/api/workforce/workers",
       "/api/workforce/jobs",
+      "/api/workforce/jobs/discover",
       "/api/verification/submissions",
       "/api/settlement/list",
       "/api/settlement/history",
@@ -134,7 +136,39 @@ export interface SnowMoonApp {
 
 const MAX_JSON_BODY_BYTES = 65_536; // 64 KB
 const RATE_LIMIT_WINDOW_MS = 60_000;
-const RATE_LIMIT_MAX_REQUESTS = 120;
+const RATE_LIMIT_MAX_MUTATION_REQUESTS = 120;
+const RATE_LIMIT_MAX_READ_REQUESTS = 1200;
+
+function sanitizeCorrelationId(raw?: string | string[]): string {
+  const val = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof val === "string" && /^[A-Za-z0-9_.\-]{8,64}$/.test(val.trim())) {
+    return val.trim();
+  }
+  return "req_" + crypto.randomBytes(8).toString("hex");
+}
+
+function logStructuredEvent(
+  level: "info" | "warn" | "error",
+  event: string,
+  details: Record<string, unknown>
+): void {
+  if (process.env.SNOWMOON_SILENT_LOGS === "true") return;
+  const safePayload = redactSensitiveText(
+    JSON.stringify({
+      ts: new Date().toISOString(),
+      level,
+      event,
+      ...details,
+    })
+  );
+  if (level === "error") {
+    console.error(safePayload);
+  } else if (level === "warn") {
+    console.warn(safePayload);
+  } else {
+    console.log(safePayload);
+  }
+}
 
 function redactSensitiveText(input: string): string {
   return input
@@ -174,20 +208,25 @@ function sendJson(
   status: number,
   payload: unknown,
   reqOrigin?: string,
-  configuredOrigin?: string
+  configuredOrigin?: string,
+  correlationId?: string
 ): void {
   const body = JSON.stringify(payload, null, 2);
-  res.writeHead(status, {
+  const headers: Record<string, string> = {
     "Content-Type": "application/json; charset=utf-8",
     "Access-Control-Allow-Origin": resolveAllowedOrigin(reqOrigin, configuredOrigin),
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, x-wallet-session, Authorization",
+    "Access-Control-Allow-Headers": "Content-Type, x-wallet-session, x-worker-token, x-request-id, Authorization",
     "Vary": "Origin",
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
     "Referrer-Policy": "no-referrer",
     "Cache-Control": "no-store",
-  });
+  };
+  if (correlationId) {
+    headers["X-Request-Id"] = correlationId;
+  }
+  res.writeHead(status, headers);
   res.end(body);
 }
 
@@ -306,33 +345,54 @@ export function buildSystemSnapshot(
   };
 }
 
-export function createSnowMoonApp(customConfig?: SnowMoonConfig): SnowMoonApp {
+export function createSnowMoonApp(
+  customConfig?: SnowMoonConfig,
+  deps?: {
+    outlayerFetch?: typeof fetch;
+    outlayerVerifyRunner?: OutLayerVerifyRunner;
+  }
+): SnowMoonApp {
   const config = customConfig ?? loadConfig();
   const engine = new SnowMoonEngine(config);
   const policyAdapter = new OutLayerPolicyAdapter(config, engine);
   const aiAdapter = new AIWorkerAdapter(config);
   const nearRpcAdapter = new NearMainnetRpcAdapter(config);
-  const escrowTracker = new MainnetEscrowTracker();
   const walletSessionManager = new WalletSessionManager();
   const repo = SnowMoonRepository.fromConfig(config);
+  const escrowTracker = new MainnetEscrowTracker(repo);
   const intentsClient = new NearIntentsClient(config, fetch, repo);
-  const outlayerExecAdapter = new OutLayerExecutionAdapter(config, fetch, repo);
+  const outlayerExecAdapter = new OutLayerExecutionAdapter(
+    config,
+    deps?.outlayerFetch ?? fetch,
+    repo,
+    deps?.outlayerVerifyRunner
+  );
   const workforceEngine = new WorkforceEngine(repo);
   const verificationEngine = new VerificationEngine(repo);
-  const settlementEngine = new SettlementEngine();
+  const settlementEngine = new SettlementEngine(repo);
   const nearRateBuckets = new Map<string, number[]>();
+  const startedAtMs = Date.now();
+  const metrics = {
+    requestsTotal: 0,
+    errors4xx: 0,
+    errors5xx: 0,
+    rateLimited: 0,
+  };
 
   const publicDir = path.resolve(__dirname, "..", "public");
 
   const server = http.createServer(async (req, res) => {
     const reqOrigin = typeof req.headers.origin === "string" ? req.headers.origin : undefined;
+    const correlationId = sanitizeCorrelationId(req.headers["x-request-id"]);
+    res.setHeader("X-Request-Id", correlationId);
+    metrics.requestsTotal += 1;
     try {
       const method = req.method || "GET";
       const parsedUrl = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
       const pathname = parsedUrl.pathname;
 
       if (method === "OPTIONS") {
-        sendJson(res, 200, { ok: true }, reqOrigin);
+        sendJson(res, 200, { ok: true }, reqOrigin, undefined, correlationId);
         return;
       }
 
@@ -389,21 +449,43 @@ export function createSnowMoonApp(customConfig?: SnowMoonConfig): SnowMoonApp {
 
       if (pathname.startsWith("/api/")) {
         const ip = req.socket.remoteAddress || "unknown";
+        const isReadMethod = method === "GET" || method === "HEAD";
+        const bucketKey = `${ip}:${isReadMethod ? "read" : "write"}`;
+        const maxRequests = isReadMethod
+          ? RATE_LIMIT_MAX_READ_REQUESTS
+          : RATE_LIMIT_MAX_MUTATION_REQUESTS;
         const now = Date.now();
-        const recent = (nearRateBuckets.get(ip) || []).filter(
+        if (nearRateBuckets.size > 5000) {
+          for (const [key, timestamps] of nearRateBuckets.entries()) {
+            const active = timestamps.filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
+            if (active.length === 0) nearRateBuckets.delete(key);
+            else nearRateBuckets.set(key, active);
+          }
+        }
+        const recent = (nearRateBuckets.get(bucketKey) || []).filter(
           (t) => now - t < RATE_LIMIT_WINDOW_MS
         );
-        if (recent.length >= RATE_LIMIT_MAX_REQUESTS) {
+        if (recent.length >= maxRequests) {
+          metrics.rateLimited += 1;
+          metrics.errors4xx += 1;
+          logStructuredEvent("warn", "rate_limited", {
+            correlationId,
+            method,
+            pathname,
+            bucket: isReadMethod ? "read" : "write",
+          });
           sendJson(
             res,
             429,
-            { ok: false, error: "ERR_RATE_LIMITED: Too many /api/near/* requests. Retry in 60s." },
-            reqOrigin
+            { ok: false, error: "ERR_RATE_LIMITED: Too many API requests. Retry in 60s." },
+            reqOrigin,
+            undefined,
+            correlationId
           );
           return;
         }
         recent.push(now);
-        nearRateBuckets.set(ip, recent);
+        nearRateBuckets.set(bucketKey, recent);
       }
 
       // 1. Health & full state snapshot
@@ -681,10 +763,30 @@ export function createSnowMoonApp(customConfig?: SnowMoonConfig): SnowMoonApp {
           txHash: String(body.txHash || ""),
           customerAccountId: String(body.customerAccountId || ""),
         });
+        let workforceJob = null;
+        if (record.escrowState === "FINAL_CONFIRMED" && record.jobId) {
+          workforceJob = workforceEngine.registerJob({
+            jobId: record.jobId,
+            customerAccountId: record.customerAccountId,
+            tenantId: record.customerAccountId,
+            escrowIntentId: record.intentId,
+            amountAtomic: record.amountAtomic,
+            requiredCapabilities: Array.isArray(body.requiredCapabilities)
+              ? body.requiredCapabilities.map(String)
+              : ["research"],
+            prompt:
+              typeof body.prompt === "string" && body.prompt.trim()
+                ? body.prompt.trim()
+                : `Mainnet escrow job ${record.jobId} (terms ${record.termsHash})`,
+            deadlineSec: record.deadlineSec,
+            funded: true,
+          });
+        }
         sendJson(res, 200, {
           ok: true,
           record,
-        });
+          workforceJob,
+        }, reqOrigin);
         return;
       }
 
@@ -851,6 +953,13 @@ export function createSnowMoonApp(customConfig?: SnowMoonConfig): SnowMoonApp {
         return;
       }
 
+      if (method === "GET" && pathname === "/api/workforce/jobs/discover") {
+        const jobId = parsedUrl.searchParams.get("jobId") || "";
+        const workers = workforceEngine.discoverWorkersForJob(jobId);
+        sendJson(res, 200, { ok: true, jobId, workers }, reqOrigin);
+        return;
+      }
+
       if (method === "POST" && pathname === "/api/workforce/jobs/register") {
         const body = await readJsonBody(req);
         const customerAccountId = String(body.customerAccountId || "");
@@ -922,9 +1031,16 @@ export function createSnowMoonApp(customConfig?: SnowMoonConfig): SnowMoonApp {
           workerId,
           aiAdapter,
           outlayerAdapter: outlayerExecAdapter,
+          requireLiveOutlayer:
+            config.isProductionMode && config.walletMode === "outlayer",
           maxRetries: body.maxRetries !== undefined ? Number(body.maxRetries) : 1,
           timeoutMs: body.timeoutMs !== undefined ? Number(body.timeoutMs) : 20_000,
         });
+        if (job.outlayerMode === "live_outlayer" && !job.outlayerAttestationVerified) {
+          throw new Error(
+            "ERR_OUTLAYER_TEE_UNVERIFIED: Refusing to submit delivery before independent TEE attestation verification passes."
+          );
+        }
         const submission =
           job.output && job.evidenceHash
             ? verificationEngine.submitDelivery({
@@ -1162,12 +1278,16 @@ export function createSnowMoonApp(customConfig?: SnowMoonConfig): SnowMoonApp {
         if (settlement.status === "CONFIRMED" && settlement.onChainConfirmed) {
           const wfJob = workforceEngine.getJob(settlement.jobId);
           if (wfJob) {
-            workforceEngine.updateJobState(settlement.jobId, "SETTLED");
-            if (wfJob.assignedWorkerId && settlement.kind === "PAYOUT_ACCEPT_DELIVERY") {
-              workforceEngine.creditWorkerEarnings(
-                wfJob.assignedWorkerId,
-                settlement.workerPayoutAtomic
-              );
+            if (settlement.kind === "PAYOUT_ACCEPT_DELIVERY") {
+              workforceEngine.updateJobState(settlement.jobId, "SETTLED");
+              if (wfJob.assignedWorkerId) {
+                workforceEngine.creditWorkerEarnings(
+                  wfJob.assignedWorkerId,
+                  settlement.workerPayoutAtomic
+                );
+              }
+            } else if (settlement.kind === "CUSTOMER_REFUND") {
+              workforceEngine.updateJobState(settlement.jobId, "REFUNDED");
             }
           }
         }
@@ -1422,11 +1542,32 @@ export function createSnowMoonApp(customConfig?: SnowMoonConfig): SnowMoonApp {
           aiAdapter.probeProviderHealth(),
         ]);
         const outlayer = outlayerExecAdapter.validateConfiguration();
+        const escrows = escrowTracker.listRecords();
+        const submissions = verificationEngine.listSubmissions();
+        const settlements = settlementEngine.listSettlements();
+        const outlayerRequests = outlayerExecAdapter.listRequests();
+        const recovery = {
+          pendingEscrows: escrows.filter(
+            (e) => e.escrowState === "PENDING" || e.escrowState === "UNKNOWN_NEEDS_RECONCILIATION"
+          ).length,
+          pendingAnchors: submissions.filter(
+            (s) => s.anchorStatus === "SUBMITTED" || s.anchorStatus === "PENDING"
+          ).length,
+          failedAnchors: submissions.filter((s) => s.anchorStatus === "FAILED").length,
+          pendingSettlements: settlements.filter(
+            (s) => s.status === "PENDING" || s.status === "FAILED_CALLBACK_RECOVERABLE"
+          ).length,
+          failedSettlements: settlements.filter((s) => s.status === "FAILED").length,
+          failedOutlayerCalls: outlayerRequests.filter(
+            (r) => r.status === "EXECUTION_FAILED" || r.status === "ATTESTATION_FAILED"
+          ).length,
+        };
         sendJson(
           res,
           200,
           {
             ok: true,
+            uptimeSec: Math.floor((Date.now() - startedAtMs) / 1000),
             network: config.network,
             isProductionMode: config.isProductionMode,
             allowSandboxDemoEndpoints: config.allowSandboxDemoEndpoints,
@@ -1434,8 +1575,56 @@ export function createSnowMoonApp(customConfig?: SnowMoonConfig): SnowMoonApp {
             database,
             ai,
             outlayer,
+            metrics: { ...metrics },
+            recovery,
           },
-          reqOrigin
+          reqOrigin,
+          undefined,
+          correlationId
+        );
+        return;
+      }
+
+      if (method === "GET" && pathname === "/api/metrics") {
+        const escrows = escrowTracker.listRecords();
+        const submissions = verificationEngine.listSubmissions();
+        const settlements = settlementEngine.listSettlements();
+        const outlayerRequests = outlayerExecAdapter.listRequests();
+        const jobs = workforceEngine.listJobs();
+        const workers = workforceEngine.listWorkers();
+        sendJson(
+          res,
+          200,
+          {
+            ok: true,
+            uptimeSec: Math.floor((Date.now() - startedAtMs) / 1000),
+            requests: { ...metrics },
+            counts: {
+              workers: workers.length,
+              jobs: jobs.length,
+              escrows: escrows.length,
+              submissions: submissions.length,
+              settlements: settlements.length,
+              outlayerRequests: outlayerRequests.length,
+              pendingEscrows: escrows.filter(
+                (e) => e.escrowState === "PENDING" || e.escrowState === "UNKNOWN_NEEDS_RECONCILIATION"
+              ).length,
+              pendingAnchors: submissions.filter(
+                (s) => s.anchorStatus === "SUBMITTED" || s.anchorStatus === "PENDING"
+              ).length,
+              failedAnchors: submissions.filter((s) => s.anchorStatus === "FAILED").length,
+              pendingSettlements: settlements.filter(
+                (s) => s.status === "PENDING" || s.status === "FAILED_CALLBACK_RECOVERABLE"
+              ).length,
+              failedSettlements: settlements.filter((s) => s.status === "FAILED").length,
+              failedOutlayerCalls: outlayerRequests.filter(
+                (r) => r.status === "EXECUTION_FAILED" || r.status === "ATTESTATION_FAILED"
+              ).length,
+            },
+          },
+          reqOrigin,
+          undefined,
+          correlationId
         );
         return;
       }
@@ -2006,9 +2195,14 @@ export function createSnowMoonApp(customConfig?: SnowMoonConfig): SnowMoonApp {
       const filePath =
         pathname === "/"
           ? path.join(publicDir, "index.html")
-          : path.join(publicDir, pathname.replace(/^\/+/, ""));
+          : path.resolve(publicDir, pathname.replace(/^\/+/, ""));
+      const relativeToPublic = path.relative(publicDir, filePath);
+      const isInsidePublic =
+        relativeToPublic !== "" &&
+        !relativeToPublic.startsWith("..") &&
+        !path.isAbsolute(relativeToPublic);
 
-      if (filePath.startsWith(publicDir) && fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+      if (isInsidePublic && fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
         const ext = path.extname(filePath).toLowerCase();
         const contentType =
           ext === ".html"
@@ -2018,12 +2212,18 @@ export function createSnowMoonApp(customConfig?: SnowMoonConfig): SnowMoonApp {
               : ext === ".css"
                 ? "text/css; charset=utf-8"
                 : "application/octet-stream";
-        res.writeHead(200, { "Content-Type": contentType });
+        res.writeHead(200, {
+          "Content-Type": contentType,
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "DENY",
+          "Referrer-Policy": "no-referrer",
+        });
         res.end(fs.readFileSync(filePath));
         return;
       }
 
-      sendJson(res, 404, { ok: false, error: `Not found: ${method} ${pathname}` }, reqOrigin);
+      metrics.errors4xx += 1;
+      sendJson(res, 404, { ok: false, error: `Not found: ${method} ${pathname}` }, reqOrigin, undefined, correlationId);
     } catch (err) {
       const rawMessage = err instanceof Error ? err.message : String(err);
       const message = redactSensitiveText(rawMessage);
@@ -2039,9 +2239,20 @@ export function createSnowMoonApp(customConfig?: SnowMoonConfig): SnowMoonApp {
           : message.startsWith("ERR_PAYLOAD_TOO_LARGE")
             ? 413
             : 400;
-      sendJson(res, status, { ok: false, error: message }, reqOrigin);
+      if (status >= 500) metrics.errors5xx += 1;
+      else if (status >= 400) metrics.errors4xx += 1;
+      logStructuredEvent(status >= 500 ? "error" : "warn", "request_error", {
+        correlationId,
+        method: req.method || "GET",
+        pathname: req.url || "/",
+        status,
+        error: message,
+      });
+      sendJson(res, status, { ok: false, error: message }, reqOrigin, undefined, correlationId);
     }
   });
+
+  server.keepAliveTimeout = 1000;
 
   return {
     config,

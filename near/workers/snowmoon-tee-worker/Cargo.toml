@@ -1,0 +1,15 @@
+[package]
+name = "snowmoon-tee-worker"
+version = "0.1.0"
+edition = "2021"
+description = "Minimal WASI Preview 2 (wasm32-wasip2) verifiable TEE worker for SnowMoon on OutLayer"
+
+[profile.release]
+codegen-units = 1
+opt-level = "z"
+lto = true
+debug = false
+strip = "symbols"
+panic = "abort"
+overflow-checks = true
+

@@ -1,0 +1,13 @@
+[package]
+name = "snowmoon-tee-worker"
+version = "0.1.0"
+edition = "2021"
+description = "Minimal zero-dependency OutLayer wasm32-wasip2 TEE worker for SnowMoon verifiable job evidence binding"
+
+[dependencies]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = "symbols"

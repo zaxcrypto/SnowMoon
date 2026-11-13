@@ -50,7 +50,7 @@ test("33. Phase 15.3 Independent OutLayer public attestation verification (no OU
   assert.equal(ok.checks.fiveMeasurementsPresent, true);
   assert.equal(ok.checks.collateralVerified, true);
   assert.equal(ok.checks.cryptographicRootOfTrustVerified, false);
-  assert.ok(ok.checks.outlayerVerifyCommand?.includes("outlayer-verify tx call_pub_1"));
+  assert.ok(ok.checks.outlayerVerifyCommand?.includes("outlayer-verify call call_pub_1"));
 
   omitRtmr3 = true;
   const bad = await ol.verifyPublicAttestationByCallId("call_pub_1");
