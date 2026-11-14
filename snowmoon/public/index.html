@@ -1603,10 +1603,7 @@
             </div>
 
             <div class="form-group" style="margin-bottom:12px;">
-              <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:6px;">
-                <label for="job-target-link" style="margin:0;">Target Link / Resource</label>
-                <span id="job-target-link-hint" class="stat-sub">Recommended: GitHub repo URL or NEAR contract ID</span>
-              </div>
+              <label for="job-target-link" style="margin-bottom:6px;">Target Link / Resource</label>
               <input id="job-target-link" type="text" placeholder="Recommended: GitHub repo URL or NEAR contract ID" />
             </div>
 
@@ -3219,13 +3216,11 @@
       const titleEl = document.getElementById("job-title");
       const promptEl = document.getElementById("job-prompt");
       const linkEl = document.getElementById("job-target-link");
-      const linkHintEl = document.getElementById("job-target-link-hint");
       if (!capEl) return;
       const hint = JOB_CAPABILITY_HINTS[capEl.value] || JOB_CAPABILITY_HINTS["analysis"];
       if (titleEl) titleEl.placeholder = hint.title;
       if (promptEl) promptEl.placeholder = hint.prompt;
       if (linkEl) linkEl.placeholder = hint.linkPlaceholder;
-      if (linkHintEl) linkHintEl.textContent = hint.linkHint;
     }
     updateJobCapabilityHints();
 
