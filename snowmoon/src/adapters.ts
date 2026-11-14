@@ -825,7 +825,10 @@ export class AIWorkerAdapter {
                           nearRpcUrl: this.config.nearMainnetRpcUrl,
                           githubToken: process.env.GITHUB_TOKEN,
                           jobId: job.jobId,
-                          jobBudgetAtomic: job.maxOperatingBudget || job.customerPayment,
+                          jobBudgetAtomic:
+                            BigInt(job.maxOperatingBudget || "0") > 0n
+                              ? job.maxOperatingBudget
+                              : job.customerPayment,
                           spendingPolicy: jobSpendingPolicy,
                           nearAccountId:
                             process.env.NEAR_ACCOUNT_ID ||

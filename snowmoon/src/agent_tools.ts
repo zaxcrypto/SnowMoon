@@ -1045,7 +1045,8 @@ export async function executeAgentTool(
           summary: "invalid args",
         };
       }
-      const jobBudget = BigInt(ctx.jobBudgetAtomic || "100000"); // default $0.10 cap if unset
+      const rawJobBudget = BigInt(ctx.jobBudgetAtomic || "0");
+      const jobBudget = rawJobBudget > 0n ? rawJobBudget : 100_000n; // default $0.10 cap if unset or "0"
       const defaultPerHireCap = jobBudget < 250_000n ? jobBudget : 250_000n; // Least-cost cap: max $0.25 unless explicitly raised
       const requestedMaxAtomic =
         typeof rawArgs.max_budget_usdc === "number" && Number.isFinite(rawArgs.max_budget_usdc) && rawArgs.max_budget_usdc > 0

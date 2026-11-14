@@ -956,10 +956,10 @@
     .trace-feed {
       display: flex;
       flex-direction: column;
-      flex: 1 1 auto;
+      flex: 1 1 0;
       gap: 4px;
-      min-height: 230px;
-      max-height: 360px;
+      min-height: 260px;
+      max-height: 640px;
       overflow-y: auto;
       padding: 14px 16px;
       font-family: var(--mono);
@@ -1369,6 +1369,45 @@
       background: var(--panel-2);
     }
 
+    /* Deliverable Preview Footer & Slide-Up Rejection Reason Drawer */
+    .deliv-footer {
+      flex-shrink: 0;
+      padding: 14px 24px 20px;
+      border-top: 1px solid var(--border);
+      background: var(--panel);
+    }
+    .deliv-reject-drawer {
+      display: grid;
+      grid-template-rows: 0fr;
+      opacity: 0;
+      margin-bottom: 0;
+      transform: translateY(10px);
+      pointer-events: none;
+      transition:
+        grid-template-rows 0.42s cubic-bezier(0.22, 1, 0.36, 1),
+        opacity 0.32s ease,
+        transform 0.42s cubic-bezier(0.22, 1, 0.36, 1),
+        margin-bottom 0.42s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+    .deliv-reject-drawer.is-open {
+      grid-template-rows: 1fr;
+      opacity: 1;
+      margin-bottom: 14px;
+      transform: translateY(0);
+      pointer-events: auto;
+    }
+    .deliv-reject-inner {
+      overflow: hidden;
+      min-height: 0;
+    }
+    .deliv-actions-row {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
     /* Live Shimmer Skeleton Loaders */
     .skeleton {
       display: inline-block;
@@ -1611,16 +1650,16 @@
         <div class="grid-2">
           <div class="card">
             <div class="form-group" style="margin-bottom:12px;">
-              <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:6px;">
+              <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px;">
                 <label for="job-title" style="margin:0;">Title</label>
-                <button class="btn btn-sm" onclick="openEscrowRecoveryModal()">Manual Escrow Recovery</button>
+                <button class="btn btn-sm" style="padding:4px 10px; font-size:11px; line-height:1.2; min-height:24px; margin-top:-2px;" onclick="openEscrowRecoveryModal()">Manual Escrow Recovery</button>
               </div>
-              <input id="job-title" type="text" maxlength="120" placeholder="e.g. Audit core.cryptozax.near smart contract" />
+              <input id="job-title" type="text" maxlength="120" placeholder="e.g. Audit core.cryptozax.near smart contract" oninput="saveCreateJobDraft()" />
             </div>
 
             <div class="form-group" style="margin-bottom:12px;">
               <label for="job-prompt" style="margin-bottom:6px;">Describe Task</label>
-              <textarea id="job-prompt" rows="3" placeholder="Describe what you want audited, reviewed, or researched..."></textarea>
+              <textarea id="job-prompt" rows="5" placeholder="Describe what to audit (e.g. scope, key concerns)..." oninput="saveCreateJobDraft()"></textarea>
               <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; margin-top:8px;">
                 <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
                   <input id="job-code-file" type="file" accept=".rs,.ts,.tsx,.js,.jsx,.sol,.py,.go,.move,.md,.json,.txt,.toml" style="display:none;" onchange="handleJobCodeFileSelect(this)" />
@@ -1636,13 +1675,13 @@
 
             <div class="form-group" style="margin-bottom:12px;">
               <label for="job-target-link" style="margin-bottom:6px;">Target Link / Resource</label>
-              <input id="job-target-link" type="text" placeholder="Recommended: GitHub repo URL or NEAR contract ID" />
+              <input id="job-target-link" type="text" placeholder="Recommended: GitHub repo URL or NEAR contract ID" oninput="saveCreateJobDraft()" />
             </div>
 
             <div class="form-grid" style="margin-bottom:12px;">
               <div class="form-group">
                 <label for="job-capability" style="display:flex; align-items:center; min-height:18px; margin-bottom:6px;">Capability</label>
-                <select id="job-capability" style="height:40px;" onchange="updateJobCapabilityHints()">
+                <select id="job-capability" style="height:40px;" onchange="updateJobCapabilityHints(); saveCreateJobDraft();">
                   <option value="security-audit" selected>Security Audit</option>
                   <option value="analysis">Analysis</option>
                   <option value="research">Research</option>
@@ -1656,7 +1695,7 @@
                   <label for="job-amount-usdc" style="margin-bottom:0;">Budget (USDC)</label>
                   <span id="job-usdc-balance-label" class="job-balance-pill">USDC Balance: —</span>
                 </div>
-                <input id="job-amount-usdc" type="number" step="0.01" min="0.01" value="0.10" style="height:40px;" oninput="updateCreateJobBalanceUI()" />
+                <input id="job-amount-usdc" type="number" step="0.01" min="0.01" value="0.10" style="height:40px;" oninput="updateCreateJobBalanceUI(); saveCreateJobDraft();" />
               </div>
             </div>
 
@@ -1751,19 +1790,25 @@
                 <button class="fazer-wizard-close" type="button" onclick="closeDeliverableModal()" aria-label="Close">×</button>
               </div>
             </div>
-            <div class="fazer-wizard-body">
-              <div id="deliv-meta" class="stat-sub" style="margin-bottom:12px;"></div>
+            <div class="fazer-wizard-body" style="flex:1; min-height:0; overflow-y:auto;">
               <div id="deliv-prompt-wrap" style="display:none; justify-content:flex-end; margin-bottom:14px;">
                 <div id="deliv-prompt-bubble" style="max-width:85%; background:var(--accent-grad); color:#ffffff; padding:10px 16px; border-radius:20px 20px 4px 20px; font-size:13px; line-height:1.45; word-break:break-word;"></div>
               </div>
-              <div id="deliv-preview-box" style="padding:16px 18px; border:1px solid var(--border); border-radius:18px; background:var(--panel-2); font-size:13.5px; line-height:1.6; max-height:46vh; overflow:auto; margin-bottom:16px; word-break:break-word;"></div>
-              <div id="deliv-reject-wrap" class="form-group" style="margin-bottom:14px;">
-                <label for="deliv-reject-reason">Rejection Reason (required if rejecting)</label>
-                <input id="deliv-reject-reason" type="text" placeholder="Describe why the deliverable does not meet requirements..." />
+              <div id="deliv-preview-box" style="padding:16px 18px; border:1px solid var(--border); border-radius:18px; background:var(--panel-2); font-size:13.5px; line-height:1.6; max-height:44vh; overflow:auto; word-break:break-word;"></div>
+            </div>
+            <div class="deliv-footer">
+              <div id="deliv-reject-wrap" class="deliv-reject-drawer" aria-hidden="true">
+                <div class="deliv-reject-inner">
+                  <div class="form-group" style="margin-bottom:0;">
+                    <label for="deliv-reject-reason">Rejection Reason (required)</label>
+                    <input id="deliv-reject-reason" type="text" placeholder="Describe why the deliverable does not meet requirements..." />
+                  </div>
+                </div>
               </div>
-              <div style="display:flex; gap:10px; flex-wrap:wrap;">
+              <div class="deliv-actions-row">
                 <button class="btn btn-pos" id="deliv-accept-btn">Accept</button>
                 <button class="btn btn-neg" id="deliv-reject-btn">Reject</button>
+                <button class="btn" id="deliv-reject-cancel-btn" type="button" style="display:none;">Cancel</button>
                 <button class="btn btn-primary" id="deliv-download-btn" style="display:none;">Download Full Deliverable</button>
               </div>
             </div>
@@ -3214,41 +3259,79 @@
     const JOB_CAPABILITY_HINTS = {
       "security-audit": {
         title: "e.g. Audit core.cryptozax.near smart contract",
-        prompt: "Describe what to audit (vulnerabilities, access control, reentrancy, or leave brief if attaching code/link)...",
+        prompt: "Describe what to audit (e.g. scope, key concerns)...",
         linkPlaceholder: "Recommended: GitHub repo URL or NEAR contract ID",
         linkHint: "Recommended: GitHub repo URL or NEAR contract ID",
       },
       "code-review": {
         title: "e.g. Review PR #42 escrow settlement refactor",
-        prompt: "Describe what to review (architecture, edge cases, gas/perf, readability, or test gaps)...",
+        prompt: "Describe what to review (e.g. PR focus, edge cases)...",
         linkPlaceholder: "Recommended: GitHub repo or Pull Request URL",
         linkHint: "Recommended: GitHub repo or Pull Request URL",
       },
       "research": {
         title: "e.g. Research NEAR Intents cross-chain liquidity",
-        prompt: "Describe the research question, topic, or entities to investigate...",
+        prompt: "Describe your research question or target...",
         linkPlaceholder: "Recommended: Docs URL, protocol site, or @x_handle",
         linkHint: "Recommended: Docs URL, protocol link, or @handle",
       },
       "analysis": {
         title: "e.g. Analyze cryptozax.near on-chain activity & risk",
-        prompt: "Describe what to analyze (metrics, tokenomics, on-chain state, or comparison)...",
+        prompt: "Describe what to analyze (e.g. metrics, risks)...",
         linkPlaceholder: "Recommended: NEAR account ID, protocol URL, or data link",
         linkHint: "Recommended: NEAR account, protocol URL, or data link",
       },
       "summarization": {
         title: "e.g. Summarize NEAR AI & x402 specification",
-        prompt: "Paste text or describe the key points/format you want summarized...",
+        prompt: "Paste text or describe key points to summarize...",
         linkPlaceholder: "Recommended: Article, whitepaper, or docs URL",
         linkHint: "Recommended: Article, whitepaper, or docs URL",
       },
       "data-extraction": {
         title: "e.g. Extract structured JSON from protocol docs",
-        prompt: "Specify the fields, schema, or table format you want extracted...",
+        prompt: "Specify the fields or JSON format to extract...",
         linkPlaceholder: "Recommended: Web page, JSON, or API docs URL",
         linkHint: "Recommended: Web page, JSON, or API docs URL",
       },
     };
+
+    const CREATE_JOB_DRAFT_KEY = "snowmoon_create_job_draft";
+
+    function saveCreateJobDraft() {
+      try {
+        const draft = {
+          title: document.getElementById("job-title")?.value || "",
+          prompt: document.getElementById("job-prompt")?.value || "",
+          targetLink: document.getElementById("job-target-link")?.value || "",
+          capability: document.getElementById("job-capability")?.value || "security-audit",
+          amountUsdc: document.getElementById("job-amount-usdc")?.value || "0.10",
+        };
+        localStorage.setItem(CREATE_JOB_DRAFT_KEY, JSON.stringify(draft));
+      } catch (_) {}
+    }
+
+    function restoreCreateJobDraft() {
+      try {
+        const raw = localStorage.getItem(CREATE_JOB_DRAFT_KEY);
+        if (!raw) return;
+        const draft = JSON.parse(raw);
+        if (!draft || typeof draft !== "object") return;
+        const titleEl = document.getElementById("job-title");
+        const promptEl = document.getElementById("job-prompt");
+        const linkEl = document.getElementById("job-target-link");
+        const capEl = document.getElementById("job-capability");
+        const amtEl = document.getElementById("job-amount-usdc");
+        if (titleEl && typeof draft.title === "string") titleEl.value = draft.title;
+        if (promptEl && typeof draft.prompt === "string") promptEl.value = draft.prompt;
+        if (linkEl && typeof draft.targetLink === "string") linkEl.value = draft.targetLink;
+        if (capEl && typeof draft.capability === "string" && JOB_CAPABILITY_HINTS[draft.capability]) capEl.value = draft.capability;
+        if (amtEl && typeof draft.amountUsdc === "string" && draft.amountUsdc) amtEl.value = draft.amountUsdc;
+      } catch (_) {}
+    }
+
+    function clearCreateJobDraft() {
+      try { localStorage.removeItem(CREATE_JOB_DRAFT_KEY); } catch (_) {}
+    }
 
     function updateJobCapabilityHints() {
       const capEl = document.getElementById("job-capability");
@@ -3261,6 +3344,7 @@
       if (promptEl) promptEl.placeholder = hint.prompt;
       if (linkEl) linkEl.placeholder = hint.linkPlaceholder;
     }
+    restoreCreateJobDraft();
     updateJobCapabilityHints();
 
     function buildCombinedJobPrompt() {
@@ -3775,6 +3859,7 @@
           const linkEl = document.getElementById("job-target-link");
           if (linkEl) linkEl.value = "";
           clearAttachedJobCodeFile();
+          clearCreateJobDraft();
           box.innerHTML = `Job created &amp; escrow verified on NEAR Mainnet · Tx: <a href="https://nearblocks.io/txns/${esc(txHash)}" target="_blank" rel="noreferrer">${esc(shortHex(txHash))}</a>`;
         });
 
@@ -4929,7 +5014,6 @@
       if (modal) modal.style.display = "flex";
       document.getElementById("deliv-modal-title").textContent = "Deliverable Preview";
       document.getElementById("deliv-status-badge").textContent = "LOADING...";
-      document.getElementById("deliv-meta").innerHTML = `<span class="skeleton skeleton-line" style="width:280px; display:inline-block;"></span>`;
       const promptWrapEl = document.getElementById("deliv-prompt-wrap");
       if (promptWrapEl) promptWrapEl.style.display = "none";
       document.getElementById("deliv-preview-box").innerHTML = `
@@ -4955,7 +5039,6 @@
           if (modal) modal.style.display = "flex";
           document.getElementById("deliv-modal-title").textContent = p.fullDownloadUnlocked ? "Settled Deliverable" : "Deliverable Preview";
           document.getElementById("deliv-status-badge").textContent = p.fullDownloadUnlocked ? "SETTLED · UNLOCKED" : `${p.status} · PREVIEW ONLY`;
-          document.getElementById("deliv-meta").innerHTML = `Job: <span class="mono">${esc(shortHex(p.jobId))}</span> · File: <strong>${esc(p.filename)}</strong> (${p.sizeBytes} bytes) · SHA-256: <span class="mono">${esc(shortHex(p.contentHash))}</span>`;
           const wfJob = (latestState?.workforceJobs || []).find((j) => j.jobId === jobId);
           const promptWrap = document.getElementById("deliv-prompt-wrap");
           const promptBubble = document.getElementById("deliv-prompt-bubble");
@@ -4973,7 +5056,16 @@
           const dlBtn = document.getElementById("deliv-download-btn");
           const acceptBtn = document.getElementById("deliv-accept-btn");
           const rejectBtn = document.getElementById("deliv-reject-btn");
+          const rejectCancelBtn = document.getElementById("deliv-reject-cancel-btn");
           const rejectWrap = document.getElementById("deliv-reject-wrap");
+          const rejectInput = document.getElementById("deliv-reject-reason");
+          if (rejectWrap) {
+            rejectWrap.classList.remove("is-open");
+            rejectWrap.setAttribute("aria-hidden", "true");
+          }
+          if (rejectInput) rejectInput.value = "";
+          if (rejectCancelBtn) rejectCancelBtn.style.display = "none";
+          if (rejectBtn) rejectBtn.textContent = "Reject";
 
           // Never show Download option in Preview or after Reject; only show once SETTLED.
           if (p.fullDownloadUnlocked) {
@@ -4985,23 +5077,42 @@
             dlBtn.disabled = true;
           }
 
+          const closeRejectDrawer = () => {
+            if (rejectWrap) {
+              rejectWrap.classList.remove("is-open");
+              rejectWrap.setAttribute("aria-hidden", "true");
+            }
+            if (rejectBtn) rejectBtn.textContent = "Reject";
+            if (rejectCancelBtn) rejectCancelBtn.style.display = "none";
+          };
+
           const isRejected = p.status === "REJECTED_LOCKED" || wfJob?.state === "REJECTED";
           if (!p.fullDownloadUnlocked && !isRejected && wfJob?.state === "VERIFIED") {
-            rejectWrap.style.display = "none";
             acceptBtn.style.display = "inline-flex";
             acceptBtn.textContent = "Settle in Wallet";
             acceptBtn.onclick = () => { closeDeliverableModal(); prepareSettlement(p.jobId); };
             rejectBtn.style.display = "none";
           } else if (!p.fullDownloadUnlocked && !isRejected) {
-            rejectWrap.style.display = "block";
             acceptBtn.style.display = "inline-flex";
             acceptBtn.textContent = "Accept";
             acceptBtn.onclick = () => { closeDeliverableModal(); verifyJob(p.jobId, true); };
             rejectBtn.style.display = "inline-flex";
-            rejectBtn.onclick = () => rejectDeliverableWithReason(p.jobId);
+            if (rejectCancelBtn) {
+              rejectCancelBtn.onclick = closeRejectDrawer;
+            }
+            rejectBtn.onclick = () => {
+              if (rejectWrap && !rejectWrap.classList.contains("is-open")) {
+                rejectWrap.setAttribute("aria-hidden", "false");
+                requestAnimationFrame(() => rejectWrap.classList.add("is-open"));
+                rejectBtn.textContent = "Confirm Reject";
+                if (rejectCancelBtn) rejectCancelBtn.style.display = "inline-flex";
+                setTimeout(() => rejectInput?.focus(), 200);
+                return;
+              }
+              rejectDeliverableWithReason(p.jobId);
+            };
           } else {
             // REJECTED or SETTLED: preview-only (no accept/reject)
-            rejectWrap.style.display = "none";
             acceptBtn.style.display = "none";
             rejectBtn.style.display = "none";
           }
