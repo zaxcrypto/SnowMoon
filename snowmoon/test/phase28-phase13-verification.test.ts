@@ -352,3 +352,148 @@ test("Restricted Beta gate: SNOWMOON_RESTRICTED_BETA=1 blocks financial endpoint
     await new Promise<void>((resolve) => app.server.close(() => resolve()));
   }
 });
+
+test("Controlled Pilot policy: Railway fails closed on omitted beta flag, and pilot mode enforces FloatPool disable, allowlist & per-job cap", async () => {
+  const railwayDefaultCfg = loadConfig({
+    RAILWAY_ENVIRONMENT: "production",
+    SNOWMOON_NETWORK: "mainnet",
+    SNOWMOON_CHAIN_MODE: "rpc",
+    SNOWMOON_DB_MODE: "json",
+    SNOWMOON_AI_MODE: "mock",
+    SNOWMOON_WALLET_MODE: "mock",
+    WALLET_SESSION_SECRET: "test-session-secret-railway",
+  });
+  assert.equal(railwayDefaultCfg.restrictedBetaMode, true);
+
+  const pilotCfg = loadConfig({
+    SNOWMOON_NETWORK: "sandbox",
+    SNOWMOON_CHAIN_MODE: "sandbox",
+    SNOWMOON_DB_MODE: "json",
+    SNOWMOON_AI_MODE: "mock",
+    SNOWMOON_WALLET_MODE: "mock",
+    WALLET_SESSION_SECRET: "test-session-secret-pilot",
+    SNOWMOON_RESTRICTED_BETA: "0",
+    SNOWMOON_PILOT_MODE: "1",
+    SNOWMOON_PILOT_MAX_JOB_USDC: "2000000",
+    SNOWMOON_PILOT_ALLOWED_ACCOUNTS: "cryptozax.near",
+  });
+  assert.equal(pilotCfg.restrictedBetaMode, false);
+  assert.equal(pilotCfg.pilot.enabled, true);
+  assert.equal(pilotCfg.pilot.maxJobUsdcAtomic, 2_000_000n);
+  assert.equal(pilotCfg.pilot.floatPoolEnabled, false);
+  assert.deepEqual(pilotCfg.pilot.allowedAccounts, ["cryptozax.near"]);
+
+  const app = createSnowMoonApp(pilotCfg);
+  await new Promise<void>((resolve) => app.server.listen(0, "127.0.0.1", () => resolve()));
+  const { port } = app.server.address() as AddressInfo;
+  const baseUrl = `http://127.0.0.1:${port}`;
+  try {
+    for (const p of [
+      "/api/near/float/prepare-deposit",
+      "/api/near/float/prepare-withdraw",
+      "/api/near/float/prepare-advance",
+      "/api/jobs/advance",
+    ]) {
+      const r = await fetch(`${baseUrl}${p}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+      assert.equal(r.status, 403, `Expected 403 for ${p}`);
+      const j = (await r.json()) as { error?: string; pilotMode?: boolean; floatPoolEnabled?: boolean };
+      assert.match(String(j.error || ""), /ERR_PILOT_FLOAT_POOL_DISABLED/);
+      assert.equal(j.pilotMode, true);
+      assert.equal(j.floatPoolEnabled, false);
+    }
+
+    const issueSandboxSession = async (accountId: string): Promise<string> => {
+      const { KeyPair } = await import("@near-js/crypto");
+      const nodeCrypto = await import("node:crypto");
+      const kp = KeyPair.fromRandom("ed25519");
+      const chRes = await fetch(`${baseUrl}/api/near/wallet/challenge`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ accountId, walletType: "meteor" }),
+      });
+      assert.equal(chRes.status, 200);
+      const chJson = (await chRes.json()) as {
+        challenge: { challengeId: string; message: string; nonceBase64: string; recipient: string };
+      };
+      const u32le = (n: number) => {
+        const b = Buffer.alloc(4);
+        b.writeUInt32LE(n >>> 0, 0);
+        return b;
+      };
+      const borshStr = (s: string) => {
+        const utf8 = Buffer.from(s, "utf8");
+        return Buffer.concat([u32le(utf8.length), utf8]);
+      };
+      const payload = Buffer.concat([
+        u32le(2147484061),
+        borshStr(chJson.challenge.message),
+        Buffer.from(chJson.challenge.nonceBase64, "base64"),
+        borshStr(chJson.challenge.recipient),
+        Buffer.from([0]),
+      ]);
+      const digest = nodeCrypto.createHash("sha256").update(payload).digest();
+      const signature = Buffer.from(kp.sign(digest).signature).toString("base64");
+      const vRes = await fetch(`${baseUrl}/api/near/wallet/verify`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          accountId,
+          networkId: "mainnet",
+          walletType: "meteor",
+          challengeId: chJson.challenge.challengeId,
+          signature,
+          publicKey: kp.getPublicKey().toString(),
+        }),
+      });
+      assert.equal(vRes.status, 200);
+      const vJson = (await vRes.json()) as { walletSessionToken: string };
+      return vJson.walletSessionToken;
+    };
+
+    const aliceToken = await issueSandboxSession("alice.near");
+    const unallowlisted = await fetch(`${baseUrl}/api/near/escrow/prepare-fund`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-wallet-session": aliceToken,
+      },
+      body: JSON.stringify({
+        customerAccountId: "alice.near",
+        customerPaymentUsdcAtomic: "1000000",
+      }),
+    });
+    assert.equal(unallowlisted.status, 403);
+    assert.match(String(((await unallowlisted.json()) as { error?: string }).error || ""), /ERR_PILOT_ACCOUNT_NOT_ALLOWLISTED/);
+
+    const pilotToken = await issueSandboxSession("cryptozax.near");
+    const overCap = await fetch(`${baseUrl}/api/near/escrow/prepare-fund`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-wallet-session": pilotToken,
+      },
+      body: JSON.stringify({
+        customerAccountId: "cryptozax.near",
+        customerPaymentUsdcAtomic: "2500000",
+      }),
+    });
+    assert.equal(overCap.status, 400);
+    assert.match(String(((await overCap.json()) as { error?: string }).error || ""), /ERR_PILOT_JOB_CAP_EXCEEDED/);
+
+    const healthRes = await fetch(`${baseUrl}/api/health`);
+    assert.equal(healthRes.status, 200);
+    const healthJson = (await healthRes.json()) as {
+      pilot?: { enabled: boolean; maxJobUsdcAtomic: string; floatPoolEnabled: boolean; allowlistActive: boolean };
+    };
+    assert.equal(healthJson.pilot?.enabled, true);
+    assert.equal(healthJson.pilot?.maxJobUsdcAtomic, "2000000");
+    assert.equal(healthJson.pilot?.floatPoolEnabled, false);
+    assert.equal(healthJson.pilot?.allowlistActive, true);
+  } finally {
+    await new Promise<void>((resolve) => app.server.close(() => resolve()));
+  }
+});

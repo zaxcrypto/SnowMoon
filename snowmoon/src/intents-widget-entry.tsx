@@ -194,6 +194,20 @@ function isValidNearRecipient(addr: string): boolean {
   return /^(([a-z\d]+[-_])*[a-z\d]+\.)*([a-z\d]+[-_])*[a-z\d]+$/.test(s);
 }
 
+function buildAuthHeaders(extra?: Record<string, string>): Record<string, string> {
+  const headers: Record<string, string> = { ...(extra || {}) };
+  try {
+    const token =
+      window.localStorage.getItem("snowmoon_wallet_token") ||
+      window.sessionStorage.getItem("snowmoon_wallet_token") ||
+      "";
+    if (token) headers["x-wallet-session"] = token;
+  } catch {
+    // ignore storage errors
+  }
+  return headers;
+}
+
 function formatFriendlyQuoteError(raw: string, token: IntentToken | null): string {
   let msg = raw.replace(/^ERR_1CLICK_QUOTE_HTTP_\d+:\s*/i, "").trim();
   if (msg.startsWith("{")) {
@@ -527,6 +541,26 @@ function SnowMoonBridgeWidget(props: SnowMoonIntentsWidgetOptions) {
     if (openModal) openModal();
   }, []);
 
+  const disconnectSourceWallet = useCallback(() => {
+    if (sourceKind === "evm") {
+      setEvmAddress(null);
+      setSourceBalance(null);
+    } else if (sourceKind === "solana") {
+      const sol = (window as unknown as { solana?: { disconnect?: () => Promise<void> } }).solana;
+      sol?.disconnect?.().catch(() => {});
+      setSolAddress(null);
+      setSourceBalance(null);
+    } else if (sourceKind === "near") {
+      const disc = (window as unknown as { disconnectWalletSession?: () => void }).disconnectWalletSession;
+      if (disc) disc();
+    }
+  }, [sourceKind]);
+
+  const disconnectNearWallet = useCallback(() => {
+    const disc = (window as unknown as { disconnectWalletSession?: () => void }).disconnectWalletSession;
+    if (disc) disc();
+  }, []);
+
   // Safe non-financial dry quote preview whenever token/amount/recipient changes
   const fetchDryQuote = useCallback(async () => {
     if (!selectedToken) return;
@@ -552,7 +586,7 @@ function SnowMoonBridgeWidget(props: SnowMoonIntentsWidgetOptions) {
     try {
       const resp = await fetch("/api/intents/widget-quote", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: buildAuthHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({
           dry: true,
           swapType: "EXACT_INPUT",
@@ -623,7 +657,7 @@ function SnowMoonBridgeWidget(props: SnowMoonIntentsWidgetOptions) {
       setTxStatusMsg("Requesting 1Click deposit quote...");
       const qResp = await fetch("/api/intents/widget-quote", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: buildAuthHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({
           dry: false,
           swapType: "EXACT_INPUT",
@@ -768,7 +802,7 @@ function SnowMoonBridgeWidget(props: SnowMoonIntentsWidgetOptions) {
 
       await fetch("/api/intents/deposit-submit", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: buildAuthHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({
           depositAddress,
           txHash,
@@ -783,7 +817,9 @@ function SnowMoonBridgeWidget(props: SnowMoonIntentsWidgetOptions) {
       const pollTimer = setInterval(async () => {
         attempts += 1;
         try {
-          const stResp = await fetch(`/api/intents/status?depositAddress=${encodeURIComponent(depositAddress)}`);
+          const stResp = await fetch(`/api/intents/status?depositAddress=${encodeURIComponent(depositAddress)}`, {
+            headers: buildAuthHeaders(),
+          });
           const stJson = (await stResp.json()) as {
             record?: {
               status?: string;
@@ -862,10 +898,10 @@ function SnowMoonBridgeWidget(props: SnowMoonIntentsWidgetOptions) {
 
   const bgCard = "var(--panel, #13131b)";
   const bgInner = "var(--panel-2, #1b1b26)";
-  const borderCol = "var(--border, rgba(155, 152, 232, 0.18))";
+  const borderCol = "var(--border, rgba(16, 185, 129, 0.18))";
   const textMain = "var(--text, #f4f4fa)";
   const textMuted = "var(--muted, #9c9cb4)";
-  const accent = "#9b98e8";
+  const accent = "var(--text, #09090b)";
 
   const expectedOutFormatted = quote?.amountOutFormatted || "0";
   const rateDisplay = useMemo(() => {
@@ -947,13 +983,11 @@ function SnowMoonBridgeWidget(props: SnowMoonIntentsWidgetOptions) {
       {tokensError && (
         <div
           style={{
-            padding: "10px 12px",
-            borderRadius: "10px",
-            background: "rgba(239,68,68,0.12)",
-            border: "1px solid rgba(239,68,68,0.35)",
-            color: "#fca5a5",
-            fontSize: "12px",
-            marginBottom: "12px",
+            color: "var(--neg, #dc2626)",
+            fontSize: "12.5px",
+            fontWeight: 500,
+            lineHeight: 1.45,
+            marginBottom: "10px",
           }}
         >
           {tokensError}
@@ -979,27 +1013,56 @@ function SnowMoonBridgeWidget(props: SnowMoonIntentsWidgetOptions) {
         >
           <span style={{ fontSize: "12px", fontWeight: 600, color: textMuted }}>From</span>
           {sourceKind !== "other" && (
-            <button
-              type="button"
-              onClick={() => void connectSourceWallet()}
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: "6px",
-                background: "transparent",
-                border: "none",
-                color: activeSourceWallet ? textMain : accent,
-                padding: "2px 4px",
-                fontSize: "12px",
-                fontWeight: 600,
-                cursor: "pointer",
-              }}
-            >
-              <ChainLogo blockchain={selectedToken?.blockchain || sourceKind} size={15} />
-              <span>
-                {activeSourceWallet ? shortAddr(activeSourceWallet) : "Connect"}
-              </span>
-            </button>
+            <div style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
+              <button
+                type="button"
+                onClick={() => void connectSourceWallet()}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  background: "transparent",
+                  border: "none",
+                  color: activeSourceWallet ? textMain : accent,
+                  padding: "2px 4px",
+                  fontSize: "12px",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                <ChainLogo blockchain={selectedToken?.blockchain || sourceKind} size={15} />
+                <span>
+                  {activeSourceWallet ? shortAddr(activeSourceWallet) : "Connect"}
+                </span>
+              </button>
+              {activeSourceWallet && (
+                <button
+                  type="button"
+                  title="Disconnect source wallet"
+                  aria-label="Disconnect source wallet"
+                  onClick={disconnectSourceWallet}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    width: "20px",
+                    height: "20px",
+                    padding: 0,
+                    background: "transparent",
+                    border: "none",
+                    borderRadius: "9999px",
+                    color: textMuted,
+                    cursor: "pointer",
+                  }}
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                    <polyline points="16 17 21 12 16 7" />
+                    <line x1="21" y1="12" x2="9" y2="12" />
+                  </svg>
+                </button>
+              )}
+            </div>
           )}
         </div>
 
@@ -1120,25 +1183,54 @@ function SnowMoonBridgeWidget(props: SnowMoonIntentsWidgetOptions) {
           }}
         >
           <span style={{ fontSize: "12px", fontWeight: 600, color: textMuted }}>To</span>
-          <button
-            type="button"
-            onClick={connectNearWallet}
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "6px",
-              background: "transparent",
-              border: "none",
-              color: nearAccountId ? textMain : accent,
-              padding: "2px 4px",
-              fontSize: "12px",
-              fontWeight: 600,
-              cursor: "pointer",
-            }}
-          >
-            <ChainLogo blockchain="near" size={15} />
-            <span>{nearAccountId ? shortAddr(nearAccountId) : "Connect"}</span>
-          </button>
+          <div style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
+            <button
+              type="button"
+              onClick={connectNearWallet}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "6px",
+                background: "transparent",
+                border: "none",
+                color: nearAccountId ? textMain : accent,
+                padding: "2px 4px",
+                fontSize: "12px",
+                fontWeight: 600,
+                cursor: "pointer",
+              }}
+            >
+              <ChainLogo blockchain="near" size={15} />
+              <span>{nearAccountId ? shortAddr(nearAccountId) : "Connect"}</span>
+            </button>
+            {nearAccountId && (
+              <button
+                type="button"
+                title="Disconnect NEAR wallet"
+                aria-label="Disconnect NEAR wallet"
+                onClick={disconnectNearWallet}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  width: "20px",
+                  height: "20px",
+                  padding: 0,
+                  background: "transparent",
+                  border: "none",
+                  borderRadius: "9999px",
+                  color: textMuted,
+                  cursor: "pointer",
+                }}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                  <polyline points="16 17 21 12 16 7" />
+                  <line x1="21" y1="12" x2="9" y2="12" />
+                </svg>
+              </button>
+            )}
+          </div>
         </div>
 
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px" }}>
@@ -1169,7 +1261,14 @@ function SnowMoonBridgeWidget(props: SnowMoonIntentsWidgetOptions) {
               color: quoteLoading ? textMuted : textMain,
             }}
           >
-            {quoteLoading ? "..." : expectedOutFormatted}
+            {quoteLoading ? (
+              <span
+                className="skeleton"
+                style={{ width: "84px", height: "24px", borderRadius: "8px", display: "inline-block" }}
+              />
+            ) : (
+              expectedOutFormatted
+            )}
           </div>
         </div>
 
@@ -1307,12 +1406,10 @@ function SnowMoonBridgeWidget(props: SnowMoonIntentsWidgetOptions) {
         <div
           style={{
             marginTop: "10px",
-            padding: "8px 10px",
-            borderRadius: "10px",
-            background: "rgba(239,68,68,0.12)",
-            border: "1px solid rgba(239,68,68,0.3)",
-            color: "#fca5a5",
-            fontSize: "12px",
+            color: "var(--neg, #dc2626)",
+            fontSize: "12.5px",
+            fontWeight: 500,
+            lineHeight: 1.45,
           }}
         >
           {quoteError}
@@ -1323,12 +1420,10 @@ function SnowMoonBridgeWidget(props: SnowMoonIntentsWidgetOptions) {
         <div
           style={{
             marginTop: "10px",
-            padding: "8px 10px",
-            borderRadius: "10px",
-            background: "rgba(239,68,68,0.12)",
-            border: "1px solid rgba(239,68,68,0.3)",
-            color: "#fca5a5",
-            fontSize: "12px",
+            color: "var(--neg, #dc2626)",
+            fontSize: "12.5px",
+            fontWeight: 500,
+            lineHeight: 1.45,
           }}
         >
           {txErrorMsg}
@@ -1339,12 +1434,10 @@ function SnowMoonBridgeWidget(props: SnowMoonIntentsWidgetOptions) {
         <div
           style={{
             marginTop: "10px",
-            padding: "8px 10px",
-            borderRadius: "10px",
-            background: "rgba(52,211,153,0.12)",
-            border: "1px solid rgba(52,211,153,0.3)",
-            color: "#6ee7b7",
-            fontSize: "12px",
+            color: isDark ? "#60a5fa" : "#2563eb",
+            fontSize: "12.5px",
+            fontWeight: 500,
+            lineHeight: 1.45,
           }}
         >
           {txStatusMsg}
@@ -1365,11 +1458,13 @@ function SnowMoonBridgeWidget(props: SnowMoonIntentsWidgetOptions) {
         style={{
           marginTop: "14px",
           width: "100%",
-          padding: "13px 16px",
-          borderRadius: "12px",
-          border: "none",
-          background: accent,
-          color: "#0e0e16",
+          padding: "13px 18px",
+          borderRadius: "9999px",
+          border: "1px solid var(--accent-btn-border, rgba(9, 9, 11, 0.10))",
+          background: "var(--accent-grad, linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(244, 244, 247, 0.92) 100%))",
+          color: "var(--on-accent, #09090b)",
+          boxShadow: "var(--accent-btn-shadow, 0 2px 8px rgba(9, 9, 11, 0.08))",
+          backdropFilter: "blur(12px)",
           fontWeight: 700,
           fontSize: "14px",
           cursor: submitting ? "wait" : "pointer",
@@ -1386,7 +1481,9 @@ function SnowMoonBridgeWidget(props: SnowMoonIntentsWidgetOptions) {
           style={{
             position: "fixed",
             inset: 0,
-            background: "rgba(0,0,0,0.65)",
+            background: "rgba(0,0,0,0.22)",
+            backdropFilter: "blur(4px)",
+            WebkitBackdropFilter: "blur(4px)",
             zIndex: 9999,
             display: "flex",
             alignItems: "center",
@@ -1403,6 +1500,7 @@ function SnowMoonBridgeWidget(props: SnowMoonIntentsWidgetOptions) {
               background: bgCard,
               border: `1px solid ${borderCol}`,
               borderRadius: "18px",
+              boxShadow: "0 20px 50px rgba(0,0,0,0.16)",
               display: "flex",
               flexDirection: "column",
               overflow: "hidden",

@@ -7,6 +7,8 @@ import type {
   OutLayerVerificationResult,
 } from "./outlayer.ts";
 import type { SnowMoonRepository } from "./persistence.ts";
+import { computeCanonicalEvidenceHash } from "./verification.ts";
+import { emitLiveTrace } from "./live_trace.ts";
 
 export type WorkforceLifecycleState =
   | "CREATED"
@@ -463,7 +465,7 @@ export class WorkforceEngine {
           const syntheticJobRecord: JobRecord = {
             seq: attempt,
             jobId: job.jobId,
-            title: `Workforce Job ${job.jobId.slice(0, 10)}`,
+            title: `Workforce Job ${job.jobId.slice(0, 10)} [capability:${job.requiredCapabilities[0] || "research"}]`,
             taskDescription: job.prompt,
             customer: job.customerAccountId,
             sponsor: job.customerAccountId,
@@ -503,9 +505,7 @@ export class WorkforceEngine {
             model: aiResult.model,
             providerMode: aiResult.adapterMode,
           };
-          const canonical = JSON.stringify(structuredOutput);
-          const evidenceHash =
-            "0x" + crypto.createHash("sha256").update(canonical).digest("hex");
+          const evidenceHash = computeCanonicalEvidenceHash(structuredOutput);
 
           if (params.outlayerAdapter) {
             const olCfg = params.outlayerAdapter.validateConfiguration();
@@ -514,6 +514,13 @@ export class WorkforceEngine {
                 "ERR_OUTLAYER_PINNED_WASM_MISSING: Refusing live OutLayer execution without pinned OUTLAYER_EXPECTED_WASM_HASH."
               );
             }
+            emitLiveTrace({
+              jobId: job.jobId,
+              stage: "tee",
+              status: "running",
+              title: "Submitting deliverable to OutLayer TEE",
+              detail: "Verifying WASM attestation on NEAR Mainnet",
+            });
             const olRes = await params.outlayerAdapter.executeAndVerify({
               jobId: job.jobId,
               workerId: params.workerId,

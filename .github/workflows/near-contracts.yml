@@ -14,7 +14,7 @@ on:
   push:
     branches:
       - main
-      - 'feat/near-*'
+      - 'feat/*'
     paths:
       - 'near/**'
       - '.github/workflows/near-contracts.yml'
@@ -75,4 +75,13 @@ jobs:
           done
       - name: Run near-workspaces Sandbox integration tests (10 tests)
         run: cargo test -p sandbox-tests -- --nocapture --test-threads=1
+      - name: Upload production WASM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: snowmoon-production-wasm
+          path: |
+            near/artifacts/production/snapfall_core.wasm
+            near/artifacts/production/snapfall_audit.wasm
+            near/artifacts/production/SHA256SUMS
+          retention-days: 30
 

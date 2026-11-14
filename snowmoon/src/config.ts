@@ -80,6 +80,12 @@ export interface SnowMoonConfig {
   autoApproveLimitUsdc: bigint;
   isProductionMode: boolean;
   restrictedBetaMode: boolean;
+  pilot: {
+    enabled: boolean;
+    maxJobUsdcAtomic: bigint;
+    floatPoolEnabled: boolean;
+    allowedAccounts: string[];
+  };
   allowSandboxDemoEndpoints: boolean;
   corsAllowedOrigin: string;
   // Strictly server-side secrets (never serialized to client responses)
@@ -214,13 +220,40 @@ export function loadConfig(envOverrides?: Record<string, string | undefined>): S
   } else if (rawRestrictedBeta === "0" || rawRestrictedBeta === "false") {
     restrictedBetaMode = false;
   } else if (rawRestrictedBeta === "") {
-    // Fail closed on Vercel if SNOWMOON_RESTRICTED_BETA is omitted.
-    restrictedBetaMode = env.VERCEL === "1";
+    // Fail closed in hosted production environments (Vercel, Railway, NODE_ENV=production) if omitted.
+    restrictedBetaMode =
+      explicitProduction || Boolean(env.RAILWAY_ENVIRONMENT || env.RAILWAY_PROJECT_ID);
   } else {
     throw new Error(
       `ERR_INVALID_RESTRICTED_BETA_CONFIG: SNOWMOON_RESTRICTED_BETA must be 1/true or 0/false, got "${rawRestrictedBeta}".`
     );
   }
+
+  const rawPilotMode = (env.SNOWMOON_PILOT_MODE || "").trim().toLowerCase();
+  const pilotEnabled = rawPilotMode === "1" || rawPilotMode === "true";
+  const rawPilotMax = (env.SNOWMOON_PILOT_MAX_JOB_USDC || "").trim();
+  let pilotMaxJobUsdcAtomic = 0n;
+  if (rawPilotMax) {
+    if (!/^\d+$/.test(rawPilotMax)) {
+      throw new Error(
+        `ERR_INVALID_PILOT_CAP: SNOWMOON_PILOT_MAX_JOB_USDC must be an integer atomic USDC amount, got "${rawPilotMax}".`
+      );
+    }
+    pilotMaxJobUsdcAtomic = BigInt(rawPilotMax);
+  } else if (pilotEnabled) {
+    pilotMaxJobUsdcAtomic = 2_000_000n; // Default controlled pilot cap: 2.00 USDC per job
+  }
+  const rawPilotFloat = (env.SNOWMOON_PILOT_FLOAT_POOL_ENABLED || "").trim().toLowerCase();
+  const pilotFloatPoolEnabled =
+    rawPilotFloat === "1" || rawPilotFloat === "true"
+      ? true
+      : rawPilotFloat === "0" || rawPilotFloat === "false"
+      ? false
+      : !pilotEnabled;
+  const pilotAllowedAccounts = (env.SNOWMOON_PILOT_ALLOWED_ACCOUNTS || "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
   const corsAllowedOrigin = (env.SNOWMOON_CORS_ORIGIN || "").trim();
 
   return {
@@ -279,7 +312,10 @@ export function loadConfig(envOverrides?: Record<string, string | undefined>): S
     outlayerProjectOwner: (env.OUTLAYER_PROJECT_OWNER || "").trim(),
     outlayerProjectName: (env.OUTLAYER_PROJECT_NAME || "").trim(),
     outlayerVersionKey: (env.OUTLAYER_VERSION_KEY || "").trim(),
-    outlayerComputeLimit: (env.OUTLAYER_COMPUTE_LIMIT || "10000").trim(),
+    outlayerComputeLimit: (() => {
+      const parsed = Number.parseInt((env.OUTLAYER_COMPUTE_LIMIT || "10000").trim(), 10);
+      return String(Number.isFinite(parsed) ? Math.max(5000, parsed) : 10000);
+    })(),
     outlayerAttachedDeposit: (env.OUTLAYER_ATTACHED_DEPOSIT || "0").trim(),
     outlayerMaxPerCallMicroUsd: (env.OUTLAYER_MAX_PER_CALL || "100000").trim(),
     outlayerExpectedWasmHash: (env.OUTLAYER_EXPECTED_WASM_HASH || "").trim().toLowerCase(),
@@ -302,6 +338,12 @@ export function loadConfig(envOverrides?: Record<string, string | undefined>): S
     autoApproveLimitUsdc,
     isProductionMode,
     restrictedBetaMode,
+    pilot: {
+      enabled: pilotEnabled,
+      maxJobUsdcAtomic: pilotMaxJobUsdcAtomic,
+      floatPoolEnabled: pilotFloatPoolEnabled,
+      allowedAccounts: pilotAllowedAccounts,
+    },
     allowSandboxDemoEndpoints,
     corsAllowedOrigin,
     secrets: {

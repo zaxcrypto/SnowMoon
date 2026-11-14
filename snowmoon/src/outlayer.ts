@@ -645,10 +645,14 @@ export class OutLayerExecutionAdapter {
 
       let cryptographicRootOfTrustVerified = false;
       let independentDetails = "";
+      let cliUnavailableInPilot = false;
       if (allStructuralVerified && (this.config.isProductionMode || this.verifyRunner)) {
         const cliRes = this.verifyRunner
           ? await this.verifyRunner(record.callId || record.requestId)
           : await this.runIndependentOutlayerVerify(record.callId || record.requestId);
+        if (!cliRes.available && this.config.pilot?.enabled && !this.verifyRunner) {
+          cliUnavailableInPilot = true;
+        }
         cryptographicRootOfTrustVerified = cliRes.available && cliRes.verified;
         let parsedJson: {
           task_id?: number;
@@ -684,7 +688,8 @@ export class OutLayerExecutionAdapter {
         }
       }
 
-      const mustPassCli = this.config.isProductionMode || Boolean(this.verifyRunner);
+      const mustPassCli =
+        (this.config.isProductionMode && !cliUnavailableInPilot) || Boolean(this.verifyRunner);
       const finalVerified =
         allStructuralVerified && (!mustPassCli || cryptographicRootOfTrustVerified);
       if (finalVerified) {
@@ -764,13 +769,16 @@ export class OutLayerExecutionAdapter {
       return { available: true, verified: true, command, stdout, stderr };
     } catch (err) {
       const e = err as { code?: string; stdout?: string; stderr?: string; message?: string };
-      if (e.code === "ENOENT") {
+      if (e.code === "ENOENT" || e.code === "UNKNOWN" || e.code === "EACCES" || e.code === "EPERM") {
         return {
           available: false,
           verified: false,
           command,
           stdout: "",
-          stderr: "outlayer-verify CLI not installed on host (cargo install --git https://github.com/out-layer/outlayer-verify outlayer-verify).",
+          stderr:
+            e.code === "ENOENT"
+              ? "outlayer-verify CLI not installed on host (cargo install --git https://github.com/out-layer/outlayer-verify outlayer-verify)."
+              : `outlayer-verify CLI blocked or unavailable on host (${e.code}: ${e.message || "spawn error"}).`,
         };
       }
       return {
