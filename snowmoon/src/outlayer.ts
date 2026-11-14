@@ -102,17 +102,44 @@ export class OutLayerExecutionAdapter {
     this.fetchImpl = fetchImpl;
     this.repo = repo;
     this.verifyRunner = verifyRunner;
-    if (repo) {
-      for (const r of repo.getCollection<OutLayerExecutionRecord>("outlayerCalls")) {
-        this.requests.set(r.requestId, r);
-        this.idempotencyIndex.set(`${r.jobId}|${r.workerId}|${r.inputHash}`, r.requestId);
-      }
+    this.reloadFromRepo();
+  }
+
+  public reloadFromRepo(): void {
+    if (!this.repo) return;
+    this.requests.clear();
+    this.idempotencyIndex.clear();
+    for (const r of this.repo.getCollection<OutLayerExecutionRecord>("outlayerCalls")) {
+      this.requests.set(r.requestId, r);
+      this.idempotencyIndex.set(`${r.jobId}|${r.workerId}|${r.inputHash}`, r.requestId);
     }
   }
 
   private persist(): void {
     if (this.repo) {
       this.repo.saveCollection("outlayerCalls", Array.from(this.requests.values()));
+    }
+  }
+
+  private async persistAsync(record?: OutLayerExecutionRecord): Promise<void> {
+    if (!this.repo) return;
+    await this.repo.saveCollectionAsync("outlayerCalls", Array.from(this.requests.values()));
+    if (record && this.repo.backend === "supabase") {
+      await this.repo.upsertOutlayerCallRow({
+        request_id: record.requestId,
+        call_id: record.callId,
+        job_id: record.jobId,
+        worker_id: record.workerId,
+        input_hash: record.inputHash,
+        output_hash: record.outputHash,
+        evidence_hash: record.evidenceHash,
+        status: record.status,
+        mode: record.mode,
+        attestation_url: record.attestationUrl,
+        attestation_checks: record.attestationChecks,
+        error: record.error,
+        updated_at: record.updatedAt,
+      });
     }
   }
 
@@ -261,14 +288,14 @@ export class OutLayerExecutionAdapter {
         record.mode = "live_outlayer";
         record.error = `ERR_OUTLAYER_NOT_CONFIGURED_IN_PRODUCTION: Missing ${missing.join(", ")}. Silent mock fallback is disabled in production.`;
         record.updatedAt = new Date().toISOString();
-        this.persist();
+        await this.persistAsync(record);
         return record;
       }
       record.status = "MOCK_EXECUTION";
       record.mode = "mock_fallback";
       record.error = `OutLayer HTTPS execution mocked: missing ${missing.join(", ")}.`;
       record.updatedAt = new Date().toISOString();
-      this.persist();
+      await this.persistAsync(record);
       return record;
     }
 
@@ -282,7 +309,7 @@ export class OutLayerExecutionAdapter {
         record.error =
           "ERR_OUTLAYER_PINNED_WASM_MISSING: OUTLAYER_EXPECTED_WASM_HASH must be a 64-hex SHA-256 hash before live TEE execution in production.";
         record.updatedAt = new Date().toISOString();
-        this.persist();
+        await this.persistAsync(record);
         return record;
       }
       if (normHex(params.expectedWasmHash) !== pinnedWasm) {
@@ -291,7 +318,7 @@ export class OutLayerExecutionAdapter {
         record.error =
           "ERR_OUTLAYER_WASM_PRECHECK_MISMATCH: Requested expectedWasmHash does not match pinned OUTLAYER_EXPECTED_WASM_HASH.";
         record.updatedAt = new Date().toISOString();
-        this.persist();
+        await this.persistAsync(record);
         return record;
       }
     }
@@ -309,7 +336,7 @@ export class OutLayerExecutionAdapter {
       record.mode = "live_outlayer";
       record.error = `ERR_OUTLAYER_SPENDING_CAP_EXCEEDED: Requested spend (${(computeLimitBig + attachedDepositBig).toString()} micro-USD) exceeds OUTLAYER_MAX_PER_CALL (${maxPerCallBig.toString()} micro-USD) or is invalid.`;
       record.updatedAt = new Date().toISOString();
-      this.persist();
+      await this.persistAsync(record);
       return record;
     }
 
@@ -346,6 +373,8 @@ export class OutLayerExecutionAdapter {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), params.timeoutMs ?? 20_000);
     try {
+      // Durably persist pending idempotency record before initiating paid OutLayer call.
+      await this.persistAsync(record);
       const resp = await this.fetchImpl(`${base}/call/${owner}/${project}`, {
         method: "POST",
         headers,
@@ -363,7 +392,7 @@ export class OutLayerExecutionAdapter {
           paymentKey
         );
         record.updatedAt = new Date().toISOString();
-        this.persist();
+        await this.persistAsync(record);
         return record;
       }
 
@@ -393,14 +422,14 @@ export class OutLayerExecutionAdapter {
         record.status = "EXECUTION_FAILED";
         record.error = sanitizeErrorMessage(data.error || "OutLayer execution failed", paymentKey);
         record.updatedAt = new Date().toISOString();
-        this.persist();
+        await this.persistAsync(record);
         return record;
       }
 
       if (params.asyncMode || data.status === "pending" || data.status === "running") {
         record.status = "EXECUTION_PENDING";
         record.updatedAt = new Date().toISOString();
-        this.persist();
+        await this.persistAsync(record);
         return record;
       }
 
@@ -412,7 +441,7 @@ export class OutLayerExecutionAdapter {
       record.executedAt = new Date().toISOString();
       record.status = record.attestationUrl ? "ATTESTATION_PENDING" : "EXECUTION_COMPLETED";
       record.updatedAt = new Date().toISOString();
-      this.persist();
+      await this.persistAsync(record);
 
       if (record.attestationUrl) {
         await this.verifyAttestation(requestId);
@@ -430,7 +459,7 @@ export class OutLayerExecutionAdapter {
         paymentKey
       );
       record.updatedAt = new Date().toISOString();
-      this.persist();
+      await this.persistAsync(record);
       return record;
     }
   }
@@ -439,6 +468,11 @@ export class OutLayerExecutionAdapter {
     const record = this.requests.get(requestId);
     if (!record) throw new Error(`ERR_UNKNOWN_OUTLAYER_REQUEST: ${requestId}`);
     if (!record.callId) {
+      if (record.status === "EXECUTION_PENDING") {
+        throw new Error(
+          `ERR_OUTLAYER_CALL_ID_MISSING: Request ${requestId} is EXECUTION_PENDING without a call_id (response lost before call_id was received). Reconcile manually against OutLayer before retrying; never blindly repeat paid execution.`
+        );
+      }
       throw new Error(`ERR_NO_CALL_ID: Request ${requestId} has no call_id to poll.`);
     }
     const paymentKey = this.config.secrets.outlayerPaymentKey;
@@ -494,7 +528,7 @@ export class OutLayerExecutionAdapter {
       record.status = "EXECUTION_PENDING";
     }
     record.updatedAt = new Date().toISOString();
-    this.persist();
+    await this.persistAsync(record);
 
     if (record.status === "ATTESTATION_PENDING" && record.attestationUrl) {
       await this.verifyAttestation(requestId);
@@ -522,7 +556,7 @@ export class OutLayerExecutionAdapter {
         details: "Missing attestation_url on OutLayer response.",
       };
       record.updatedAt = new Date().toISOString();
-      this.persist();
+      await this.persistAsync(record);
       return record;
     }
 
@@ -532,7 +566,7 @@ export class OutLayerExecutionAdapter {
         record.status = "ATTESTATION_FAILED";
         record.error = `Attestation fetch failed (HTTP ${resp.status}).`;
         record.updatedAt = new Date().toISOString();
-        this.persist();
+        await this.persistAsync(record);
         return record;
       }
 
@@ -684,13 +718,13 @@ export class OutLayerExecutionAdapter {
           "ERR_ATTESTATION_VERIFICATION_FAILED: One or more TEE attestation checks failed.";
       }
       record.updatedAt = new Date().toISOString();
-      this.persist();
+      await this.persistAsync(record);
       return record;
     } catch (err) {
       record.status = "ATTESTATION_FAILED";
       record.error = err instanceof Error ? err.message : String(err);
       record.updatedAt = new Date().toISOString();
-      this.persist();
+      await this.persistAsync(record);
       return record;
     }
   }

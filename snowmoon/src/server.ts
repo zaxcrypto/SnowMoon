@@ -24,9 +24,14 @@ import {
 import { OutLayerExecutionAdapter, type OutLayerVerifyRunner } from "./outlayer.ts";
 import { WorkforceEngine } from "./workforce.ts";
 import { VerificationEngine } from "./verification.ts";
-import { SettlementEngine } from "./settlement.ts";
+import { SettlementEngine, type RefundReason } from "./settlement.ts";
 import { SnowMoonRepository } from "./persistence.ts";
 import { NearIntentsClient } from "./near_intents.ts";
+import { FloatPoolAdvanceOrchestrator } from "./float_pool.ts";
+import { DeliverableVault, LocalPrivateObjectStorage } from "./deliverables.ts";
+import { MonitoringService } from "./monitoring.ts";
+import { DeterministicSpendingPolicyEngine } from "./spending_policy.ts";
+import { NearAiBrainOrchestrator } from "./brain_audit.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -69,6 +74,7 @@ export const PRODUCTION_ROUTE_POLICY = {
       "/api/outlayer/requests",
       "/api/outlayer/config-status",
       "/api/outlayer/verify-public",
+      "/api/monitoring/health",
     ],
     walletSessionAuthenticated: [
       "/api/near/wallet/verify",
@@ -80,11 +86,15 @@ export const PRODUCTION_ROUTE_POLICY = {
       "/api/near/float/prepare-deposit",
       "/api/near/float/prepare-withdraw",
       "/api/near/float/prepare-advance",
+      "/api/near/float/evaluate",
       "/api/near/vault/prepare-start-work",
       "/api/near/vault/prepare-submit-delivery",
       "/api/near/vault/prepare-accept-delivery",
       "/api/near/vault/prepare-refund",
+      "/api/settlement/prepare-refund",
+      "/api/deliverables/*",
       "/api/intents/quote",
+      "/api/intents/widget-quote",
       "/api/intents/prepare-deposit",
       "/api/intents/deposit-submit",
       "/api/intents/verify-destination",
@@ -279,6 +289,7 @@ export function buildSystemSnapshot(
       mainnetAuditOperatorAccountId: config.mainnetAuditOperatorAccountId,
       liveTxBroadcastingEnabled: config.liveTxBroadcastingEnabled,
       isProductionMode: config.isProductionMode,
+      restrictedBetaMode: config.restrictedBetaMode,
       allowSandboxDemoEndpoints: config.allowSandboxDemoEndpoints,
       coreContractId: config.coreContractId,
       auditContractId: config.auditContractId,
@@ -357,8 +368,20 @@ export function createSnowMoonApp(
   const policyAdapter = new OutLayerPolicyAdapter(config, engine);
   const aiAdapter = new AIWorkerAdapter(config);
   const nearRpcAdapter = new NearMainnetRpcAdapter(config);
-  const walletSessionManager = new WalletSessionManager();
+  const walletSessionSecret = config.isProductionMode
+    ? (config.secrets.walletSessionSecret || process.env.WALLET_SESSION_SECRET || "").trim()
+    : (
+        config.secrets.walletSessionSecret ||
+        process.env.WALLET_SESSION_SECRET ||
+        config.secrets.supabaseSecretKey ||
+        config.secrets.operatorPrivateKey ||
+        undefined
+      );
   const repo = SnowMoonRepository.fromConfig(config);
+  const walletSessionManager = new WalletSessionManager(walletSessionSecret, undefined, {
+    requireSecret: config.isProductionMode,
+    repo,
+  });
   const escrowTracker = new MainnetEscrowTracker(repo);
   const intentsClient = new NearIntentsClient(config, fetch, repo);
   const outlayerExecAdapter = new OutLayerExecutionAdapter(
@@ -370,8 +393,52 @@ export function createSnowMoonApp(
   const workforceEngine = new WorkforceEngine(repo);
   const verificationEngine = new VerificationEngine(repo);
   const settlementEngine = new SettlementEngine(repo);
+  const floatOrchestrator = new FloatPoolAdvanceOrchestrator();
+  const deliverableVault =
+    config.persistenceBackend === "json" &&
+    (!config.supabaseUrl || !config.secrets.supabaseSecretKey) &&
+    (process.env.SNOWMOON_ENV || "").toLowerCase() !== "production" &&
+    (process.env.NODE_ENV || "").toLowerCase() !== "production" &&
+    !process.env.VERCEL
+      ? new DeliverableVault(
+          new LocalPrivateObjectStorage(
+            path.join(path.dirname(config.persistenceFile), "deliverables"),
+            false
+          ),
+          walletSessionSecret || "snowmoon-dev-deliverable-secret"
+        )
+      : DeliverableVault.fromConfig(
+          config,
+          walletSessionSecret || "snowmoon-dev-deliverable-secret"
+        );
+  const monitoring = new MonitoringService();
+  const spendingPolicy = new DeterministicSpendingPolicyEngine();
+  const brainOrchestrator = new NearAiBrainOrchestrator();
   const nearRateBuckets = new Map<string, number[]>();
   const startedAtMs = Date.now();
+  let enginesHydrated = false;
+  let hydrationPromise: Promise<void> | null = null;
+  const ensureEnginesHydrated = async (): Promise<void> => {
+    if (enginesHydrated) return;
+    if (!hydrationPromise) {
+      hydrationPromise = (async () => {
+        await repo.ensureHydrated(config.isProductionMode && repo.backend === "supabase");
+        if (repo.backend === "supabase") {
+          walletSessionManager.reloadFromRepo();
+          escrowTracker.reloadFromRepo();
+          intentsClient.reloadFromRepo();
+          outlayerExecAdapter.reloadFromRepo();
+          workforceEngine.reloadFromRepo();
+          verificationEngine.reloadFromRepo();
+          settlementEngine.reloadFromRepo();
+        }
+        enginesHydrated = true;
+      })().finally(() => {
+        hydrationPromise = null;
+      });
+    }
+    await hydrationPromise;
+  };
   const metrics = {
     requestsTotal: 0,
     errors4xx: 0,
@@ -427,7 +494,22 @@ export function createSnowMoonApp(
         }
         return session.accountId;
       };
+      const assertAuthenticatedSession = (): string => {
+        const token = getWalletToken();
+        if (!token || !token.trim()) {
+          throw new Error(
+            "ERR_WALLET_AUTH_REQUIRED: Missing x-wallet-session token. Connect and verify your Mainnet wallet first."
+          );
+        }
+        return walletSessionManager.verifyToken(token).accountId;
+      };
       const assertCustomerOrOperatorSession = (customerAccountId?: string): string => {
+        const target = (customerAccountId || "").trim();
+        if (!target) {
+          throw new Error(
+            "ERR_CUSTOMER_ACCOUNT_REQUIRED: Non-empty customerAccountId is required for ownership verification."
+          );
+        }
         const token = getWalletToken();
         if (!token || !token.trim()) {
           throw new Error(
@@ -436,18 +518,19 @@ export function createSnowMoonApp(
         }
         const session = walletSessionManager.verifyToken(token);
         if (
-          customerAccountId &&
-          session.accountId !== customerAccountId &&
+          session.accountId !== target &&
           !isOperatorOrAdminAccount(session.accountId)
         ) {
           throw new Error(
-            `ERR_ACCOUNT_IMPERSONATION_BLOCKED: Authenticated wallet ${session.accountId} cannot act for ${customerAccountId}.`
+            `ERR_ACCOUNT_IMPERSONATION_BLOCKED: Authenticated wallet ${session.accountId} cannot act for ${target}.`
           );
         }
         return session.accountId;
       };
 
       if (pathname.startsWith("/api/")) {
+        // Hydrate authoritative remote state and reload all engines on cold start.
+        await ensureEnginesHydrated();
         const ip = req.socket.remoteAddress || "unknown";
         const isReadMethod = method === "GET" || method === "HEAD";
         const bucketKey = `${ip}:${isReadMethod ? "read" : "write"}`;
@@ -486,6 +569,54 @@ export function createSnowMoonApp(
         }
         recent.push(now);
         nearRateBuckets.set(bucketKey, recent);
+      }
+
+      if (
+        config.restrictedBetaMode &&
+        method === "POST" &&
+        new Set([
+          "/api/near/escrow/prepare-fund",
+          "/api/near/escrow/submit-tx",
+          "/api/intents/prepare-deposit",
+          "/api/intents/prepare-escrow",
+          "/api/intents/deposit-submit",
+          "/api/near/float/prepare-deposit",
+          "/api/near/float/prepare-withdraw",
+          "/api/near/float/prepare-advance",
+          "/api/near/vault/prepare-accept-delivery",
+          "/api/near/vault/prepare-refund",
+          "/api/settlement/prepare",
+          "/api/settlement/prepare-refund",
+          "/api/settlement/submit-tx",
+          "/api/settlement/prepare-claim",
+          "/api/outlayer/execute",
+          "/api/jobs/fund",
+          "/api/jobs/advance",
+          "/api/jobs/accept",
+          "/api/float/deposit",
+          "/api/float/withdraw",
+        ]).has(pathname)
+      ) {
+        metrics.errors4xx += 1;
+        logStructuredEvent("warn", "restricted_beta_blocked", {
+          correlationId,
+          method,
+          pathname,
+        });
+        sendJson(
+          res,
+          403,
+          {
+            ok: false,
+            restrictedBetaMode: true,
+            error:
+              "ERR_RESTRICTED_BETA_FINANCIAL_DISABLED: Financial execution is disabled during SnowMoon Restricted Beta pending external smart-contract audit and operator verification.",
+          },
+          reqOrigin,
+          undefined,
+          correlationId
+        );
+        return;
       }
 
       // 1. Health & full state snapshot
@@ -543,11 +674,9 @@ export function createSnowMoonApp(
       // 1e. Unsigned transaction payload preparation for NEP-141 USDC escrow (ft_transfer_call) & SnowMoon Core
       if (method === "POST" && pathname === "/api/near/prepare-tx") {
         const body = await readJsonBody(req);
-        if (config.isProductionMode || getWalletToken()) {
-          assertCustomerOrOperatorSession(
-            body.customerAccountId ? String(body.customerAccountId) : undefined
-          );
-        }
+        assertCustomerOrOperatorSession(
+          body.customerAccountId ? String(body.customerAccountId) : undefined
+        );
         const prepared = nearRpcAdapter.prepareUsdcEscrowAndJobPayloads({
           customerAccountId: body.customerAccountId
             ? String(body.customerAccountId)
@@ -634,6 +763,19 @@ export function createSnowMoonApp(
         return;
       }
 
+      // 1h-2. Issue single-use NEP-413 authentication challenge for wallet signing
+      if (method === "POST" && pathname === "/api/near/wallet/challenge") {
+        const body = await readJsonBody(req);
+        const accountId = String(body.accountId || "").trim();
+        const challenge = walletSessionManager.issueChallenge({
+          accountId,
+          recipient: body.recipient ? String(body.recipient) : "snowmoon.near",
+        });
+        await repo.flushPending();
+        sendJson(res, 200, { ok: true, challenge }, reqOrigin);
+        return;
+      }
+
       // 1i. Customer Wallet Mainnet session verification & live USDC/Core state
       if (method === "POST" && pathname === "/api/near/wallet/verify") {
         const body = await readJsonBody(req);
@@ -642,7 +784,32 @@ export function createSnowMoonApp(
           networkId: String(body.networkId || ""),
           walletType: String(body.walletType || ""),
           privateKey: body.privateKey,
+          isProductionMode: config.isProductionMode,
         });
+        const challengeId = String(body.challengeId || "").trim();
+        const signature = String(body.signature || "").trim();
+        const publicKey = String(body.publicKey || "").trim();
+        if (!challengeId || !signature || !publicKey) {
+          throw new Error(
+            "ERR_WALLET_SIGNATURE_REQUIRED: Signed NEP-413 challenge (challengeId, signature, publicKey) is required to authenticate."
+          );
+        }
+        await walletSessionManager.verifyNep413SignatureAsync({
+          challengeId,
+          accountId: session.accountId,
+          signature,
+          publicKey,
+          callbackUrl: body.callbackUrl ? String(body.callbackUrl) : undefined,
+        });
+        await repo.flushPending();
+        if (config.chainMode === "rpc") {
+          const accessKey = await nearRpcAdapter.viewAccessKey(session.accountId, publicKey);
+          if (!accessKey.exists) {
+            throw new Error(
+              `ERR_WALLET_ACCESS_KEY_INVALID: Public key ${publicKey} is not an active access key on ${session.accountId}.`
+            );
+          }
+        }
         const walletSessionToken = walletSessionManager.issueToken(session);
         const customerState = await getCustomerMainnetState(
           nearRpcAdapter,
@@ -722,6 +889,7 @@ export function createSnowMoonApp(
               : Math.floor(Date.now() / 1000) + 86400,
           clientNonce: body.clientNonce ? String(body.clientNonce) : undefined,
         });
+        await repo.flushPending();
         sendJson(res, 200, {
           ok: true,
           ...result,
@@ -743,6 +911,7 @@ export function createSnowMoonApp(
           txHash: String(body.txHash || ""),
           customerAccountId,
         });
+        await repo.flushPending();
         sendJson(res, 200, {
           ok: true,
           record,
@@ -753,11 +922,9 @@ export function createSnowMoonApp(
       // 1n. Reconcile Mainnet transaction hash & on-chain Core job state
       if (method === "POST" && pathname === "/api/near/escrow/reconcile") {
         const body = await readJsonBody(req);
-        if (config.isProductionMode || getWalletToken()) {
-          assertCustomerOrOperatorSession(
-            body.customerAccountId ? String(body.customerAccountId) : undefined
-          );
-        }
+        assertCustomerOrOperatorSession(
+          body.customerAccountId ? String(body.customerAccountId) : undefined
+        );
         const record = await escrowTracker.reconcileTransaction(nearRpcAdapter, {
           intentId: body.intentId ? String(body.intentId) : undefined,
           txHash: String(body.txHash || ""),
@@ -770,6 +937,7 @@ export function createSnowMoonApp(
             customerAccountId: record.customerAccountId,
             tenantId: record.customerAccountId,
             escrowIntentId: record.intentId,
+            escrowTxHash: record.sourceTxHash ?? undefined,
             amountAtomic: record.amountAtomic,
             requiredCapabilities: Array.isArray(body.requiredCapabilities)
               ? body.requiredCapabilities.map(String)
@@ -782,6 +950,7 @@ export function createSnowMoonApp(
             funded: true,
           });
         }
+        await repo.flushPending();
         sendJson(res, 200, {
           ok: true,
           record,
@@ -868,8 +1037,11 @@ export function createSnowMoonApp(
 
       if (method === "POST" && pathname === "/api/near/float/prepare-advance") {
         const body = await readJsonBody(req);
-        const operatorAccountId = String(body.operatorAccountId || "");
-        walletSessionManager.assertAuthorizedCustomer(getWalletToken(), operatorAccountId);
+        const authed = assertOperatorOrAdminSession();
+        const operatorAccountId = String(body.operatorAccountId || authed);
+        if (authed !== operatorAccountId && !isOperatorOrAdminAccount(authed)) {
+          throw new Error(`ERR_ACCOUNT_IMPERSONATION_BLOCKED: ${authed} cannot act for ${operatorAccountId}.`);
+        }
         const tx = nearRpcAdapter.prepareFloatPoolRequestAdvancePayload({
           operatorAccountId,
           jobId: String(body.jobId || ""),
@@ -881,8 +1053,11 @@ export function createSnowMoonApp(
 
       if (method === "POST" && pathname === "/api/near/vault/prepare-start-work") {
         const body = await readJsonBody(req);
-        const operatorAccountId = String(body.operatorAccountId || "");
-        walletSessionManager.assertAuthorizedCustomer(getWalletToken(), operatorAccountId);
+        const authed = assertOperatorOrAdminSession();
+        const operatorAccountId = String(body.operatorAccountId || authed);
+        if (authed !== operatorAccountId && !isOperatorOrAdminAccount(authed)) {
+          throw new Error(`ERR_ACCOUNT_IMPERSONATION_BLOCKED: ${authed} cannot act for ${operatorAccountId}.`);
+        }
         const tx = nearRpcAdapter.prepareVaultStartWorkPayload({
           operatorAccountId,
           jobId: String(body.jobId || ""),
@@ -893,8 +1068,11 @@ export function createSnowMoonApp(
 
       if (method === "POST" && pathname === "/api/near/vault/prepare-submit-delivery") {
         const body = await readJsonBody(req);
-        const operatorAccountId = String(body.operatorAccountId || "");
-        walletSessionManager.assertAuthorizedCustomer(getWalletToken(), operatorAccountId);
+        const authed = assertOperatorOrAdminSession();
+        const operatorAccountId = String(body.operatorAccountId || authed);
+        if (authed !== operatorAccountId && !isOperatorOrAdminAccount(authed)) {
+          throw new Error(`ERR_ACCOUNT_IMPERSONATION_BLOCKED: ${authed} cannot act for ${operatorAccountId}.`);
+        }
         const tx = nearRpcAdapter.prepareVaultSubmitDeliveryPayload({
           operatorAccountId,
           jobId: String(body.jobId || ""),
@@ -912,9 +1090,7 @@ export function createSnowMoonApp(
 
       if (method === "POST" && pathname === "/api/workforce/workers/register") {
         const body = await readJsonBody(req);
-        if (config.isProductionMode || getWalletToken()) {
-          assertOperatorOrAdminSession();
-        }
+        assertOperatorOrAdminSession();
         const worker = workforceEngine.registerWorker({
           workerId: String(body.workerId || ""),
           accountId: String(body.accountId || ""),
@@ -926,6 +1102,7 @@ export function createSnowMoonApp(
         });
         const workerToken =
           body.issueToken === true ? workforceEngine.issueWorkerToken(worker.workerId) : undefined;
+        await repo.flushPending();
         sendJson(res, 200, { ok: true, worker, ...(workerToken ? { workerToken } : {}) }, reqOrigin);
         return;
       }
@@ -934,16 +1111,15 @@ export function createSnowMoonApp(
         const body = await readJsonBody(req);
         const workerId = String(body.workerId || "");
         const headerToken = getWorkerToken();
-        if (config.isProductionMode && !headerToken) {
+        if (!headerToken) {
           throw new Error("ERR_WORKER_AUTH_REQUIRED: Missing x-worker-token.");
         }
-        if (config.isProductionMode || headerToken) {
-          workforceEngine.assertWorkerAuthorized(workerId, headerToken);
-        }
+        workforceEngine.assertWorkerAuthorized(workerId, headerToken, config.isProductionMode);
         const worker = workforceEngine.setWorkerAvailability(
           workerId,
           Boolean(body.available)
         );
+        await repo.flushPending();
         sendJson(res, 200, { ok: true, worker }, reqOrigin);
         return;
       }
@@ -963,37 +1139,104 @@ export function createSnowMoonApp(
       if (method === "POST" && pathname === "/api/workforce/jobs/register") {
         const body = await readJsonBody(req);
         const customerAccountId = String(body.customerAccountId || "");
-        if (config.isProductionMode || getWalletToken()) {
-          assertCustomerOrOperatorSession(customerAccountId);
-        }
+        assertCustomerOrOperatorSession(customerAccountId);
         const prompt = String(body.prompt || "").trim();
         if (!prompt) {
           throw new Error("ERR_INVALID_PROMPT: Task prompt is required.");
         }
+        const amountAtomic = String(body.amountAtomic || "1000000");
+        const requestedFunded = Boolean(body.funded);
+        const escrowTxHash = body.escrowTxHash
+          ? String(body.escrowTxHash).trim()
+          : body.txHash
+          ? String(body.txHash).trim()
+          : "";
+        if (config.isProductionMode) {
+          if (!requestedFunded || !escrowTxHash) {
+            throw new Error(
+              "ERR_ESCROW_PROOF_REQUIRED: Production job registration requires funded=true and a reconciled Mainnet escrowTxHash."
+            );
+          }
+          const matchingEscrow = escrowTracker
+            .listRecords()
+            .find((e) => e.sourceTxHash === escrowTxHash);
+          if (
+            !matchingEscrow ||
+            !matchingEscrow.onChainConfirmed ||
+            matchingEscrow.escrowState !== "FINAL_CONFIRMED"
+          ) {
+            throw new Error(
+              `ERR_ESCROW_NOT_CONFIRMED: Mainnet escrow transaction ${escrowTxHash} is not FINAL_CONFIRMED.`
+            );
+          }
+          if (
+            matchingEscrow.coreContractId !== config.mainnetCoreContractId ||
+            matchingEscrow.usdcContractId !== config.mainnetUsdcContractId
+          ) {
+            throw new Error(
+              "ERR_ESCROW_CONTRACT_MISMATCH: Escrow transaction does not match configured Mainnet Core/USDC contracts."
+            );
+          }
+          if (matchingEscrow.customerAccountId !== customerAccountId) {
+            throw new Error(
+              `ERR_ESCROW_SENDER_MISMATCH: Escrow customer ${matchingEscrow.customerAccountId} does not match ${customerAccountId}.`
+            );
+          }
+          if (BigInt(matchingEscrow.amountAtomic) < BigInt(amountAtomic)) {
+            throw new Error(
+              `ERR_ESCROW_AMOUNT_INSUFFICIENT: Escrow amount ${matchingEscrow.amountAtomic} is less than requested ${amountAtomic}.`
+            );
+          }
+          const duplicateJob = workforceEngine
+            .listJobs()
+            .find((j) => (j as unknown as { escrowTxHash?: string }).escrowTxHash === escrowTxHash);
+          if (duplicateJob) {
+            throw new Error(
+              `ERR_DUPLICATE_ESCROW_TX: Escrow transaction ${escrowTxHash} is already bound to job ${duplicateJob.jobId}.`
+            );
+          }
+          if (!matchingEscrow.jobId) {
+            throw new Error(
+              `ERR_ESCROW_MISSING_JOB_ID: Reconciled escrow ${escrowTxHash} has no on-chain Core jobId.`
+            );
+          }
+          const requestedJobId = String(body.jobId || "").trim();
+          if (requestedJobId && requestedJobId !== matchingEscrow.jobId) {
+            throw new Error(
+              `ERR_JOB_ID_ESCROW_MISMATCH: Provided jobId ${requestedJobId} does not match on-chain escrow jobId ${matchingEscrow.jobId}.`
+            );
+          }
+        }
+        const resolvedJobId =
+          String(body.jobId || "").trim() ||
+          (config.isProductionMode
+            ? escrowTracker.listRecords().find((e) => e.sourceTxHash === escrowTxHash)?.jobId || ""
+            : "");
         const job = workforceEngine.registerJob({
-          jobId: String(body.jobId || ""),
-          customerAccountId: String(body.customerAccountId || ""),
-          amountAtomic: String(body.amountAtomic || "1000000"),
+          jobId: resolvedJobId,
+          customerAccountId,
+          escrowTxHash: escrowTxHash || undefined,
+          amountAtomic,
           requiredCapabilities: Array.isArray(body.requiredCapabilities)
             ? body.requiredCapabilities.map(String)
             : String(body.requiredCapabilities || "research").split(","),
           prompt,
           deadlineSec: body.deadlineSec ? Number(body.deadlineSec) : Math.floor(Date.now() / 1000) + 86400,
-          funded: body.funded !== undefined ? Boolean(body.funded) : true,
+          funded: requestedFunded,
         });
+        await repo.flushPending();
         sendJson(res, 200, { ok: true, job }, reqOrigin);
         return;
       }
 
       if (method === "POST" && pathname === "/api/workforce/jobs/assign") {
         const body = await readJsonBody(req);
-        if (config.isProductionMode || getWalletToken()) {
-          assertOperatorOrAdminSession();
-        }
+        assertOperatorOrAdminSession();
         const job = workforceEngine.assignJob(
           String(body.jobId || ""),
           body.workerId ? String(body.workerId) : undefined
         );
+        await repo.flushPending();
         sendJson(res, 200, { ok: true, job }, reqOrigin);
         return;
       }
@@ -1002,16 +1245,15 @@ export function createSnowMoonApp(
         const body = await readJsonBody(req);
         const workerId = String(body.workerId || "");
         const headerToken = getWorkerToken();
-        if (config.isProductionMode && !headerToken) {
+        if (!headerToken) {
           throw new Error("ERR_WORKER_AUTH_REQUIRED: Missing x-worker-token.");
         }
-        if (config.isProductionMode || headerToken) {
-          workforceEngine.assertWorkerAuthorized(workerId, headerToken);
-        }
+        workforceEngine.assertWorkerAuthorized(workerId, headerToken, config.isProductionMode);
         const job = workforceEngine.acceptJob(
           String(body.jobId || ""),
           workerId
         );
+        await repo.flushPending();
         sendJson(res, 200, { ok: true, job }, reqOrigin);
         return;
       }
@@ -1020,39 +1262,43 @@ export function createSnowMoonApp(
         const body = await readJsonBody(req);
         const workerId = String(body.workerId || "");
         const headerToken = getWorkerToken();
-        if (config.isProductionMode && !headerToken) {
+        if (!headerToken) {
           throw new Error("ERR_WORKER_AUTH_REQUIRED: Missing x-worker-token.");
         }
-        if (config.isProductionMode || headerToken) {
-          workforceEngine.assertWorkerAuthorized(workerId, headerToken);
+        workforceEngine.assertWorkerAuthorized(workerId, headerToken, config.isProductionMode);
+        let job;
+        let submission;
+        try {
+          job = await workforceEngine.executeJob({
+            jobId: String(body.jobId || ""),
+            workerId,
+            aiAdapter,
+            outlayerAdapter: outlayerExecAdapter,
+            requireLiveOutlayer:
+              config.isProductionMode && config.walletMode === "outlayer",
+            maxRetries: body.maxRetries !== undefined ? Number(body.maxRetries) : 1,
+            timeoutMs: body.timeoutMs !== undefined ? Number(body.timeoutMs) : 20_000,
+          });
+          if (job.outlayerMode === "live_outlayer" && !job.outlayerAttestationVerified) {
+            throw new Error(
+              "ERR_OUTLAYER_TEE_UNVERIFIED: Refusing to submit delivery before independent TEE attestation verification passes."
+            );
+          }
+          submission =
+            job.output && job.evidenceHash
+              ? verificationEngine.submitDelivery({
+                  jobId: job.jobId,
+                  workerId: String(body.workerId || ""),
+                  workerAccountId: job.assignedWorkerAccountId || "worker.near",
+                  expectedWorkerId: job.assignedWorkerId || "",
+                  deliverable: job.output,
+                  evidenceHash: job.evidenceHash,
+                  deadlineSec: job.deadlineSec,
+                })
+              : null;
+        } finally {
+          await repo.flushPending();
         }
-        const job = await workforceEngine.executeJob({
-          jobId: String(body.jobId || ""),
-          workerId,
-          aiAdapter,
-          outlayerAdapter: outlayerExecAdapter,
-          requireLiveOutlayer:
-            config.isProductionMode && config.walletMode === "outlayer",
-          maxRetries: body.maxRetries !== undefined ? Number(body.maxRetries) : 1,
-          timeoutMs: body.timeoutMs !== undefined ? Number(body.timeoutMs) : 20_000,
-        });
-        if (job.outlayerMode === "live_outlayer" && !job.outlayerAttestationVerified) {
-          throw new Error(
-            "ERR_OUTLAYER_TEE_UNVERIFIED: Refusing to submit delivery before independent TEE attestation verification passes."
-          );
-        }
-        const submission =
-          job.output && job.evidenceHash
-            ? verificationEngine.submitDelivery({
-                jobId: job.jobId,
-                workerId: String(body.workerId || ""),
-                workerAccountId: job.assignedWorkerAccountId || "worker.near",
-                expectedWorkerId: job.assignedWorkerId || "",
-                deliverable: job.output,
-                evidenceHash: job.evidenceHash,
-                deadlineSec: job.deadlineSec,
-              })
-            : null;
         sendJson(res, 200, { ok: true, job, submission }, reqOrigin);
         return;
       }
@@ -1066,13 +1312,11 @@ export function createSnowMoonApp(
       if (method === "POST" && pathname === "/api/verification/submit") {
         const body = await readJsonBody(req);
         const workerId = String(body.workerId || "");
-        if (config.isProductionMode) {
-          const workerToken = getWorkerToken();
-          if (workerToken) {
-            workforceEngine.assertWorkerAuthorized(workerId, workerToken);
-          } else {
-            assertOperatorOrAdminSession();
-          }
+        const workerToken = getWorkerToken();
+        if (workerToken) {
+          workforceEngine.assertWorkerAuthorized(workerId, workerToken, config.isProductionMode);
+        } else {
+          assertOperatorOrAdminSession();
         }
         const wfJob = workforceEngine.getJob(String(body.jobId || ""));
         const submission = verificationEngine.submitDelivery({
@@ -1084,6 +1328,7 @@ export function createSnowMoonApp(
           evidenceHash: String(body.evidenceHash || ""),
           deadlineSec: body.deadlineSec ? Number(body.deadlineSec) : (wfJob?.deadlineSec ?? Math.floor(Date.now() / 1000) + 86400),
         });
+        await repo.flushPending();
         sendJson(res, 200, { ok: true, submission }, reqOrigin);
         return;
       }
@@ -1091,14 +1336,12 @@ export function createSnowMoonApp(
       if (method === "POST" && pathname === "/api/verification/verify") {
         const body = await readJsonBody(req);
         const verifierAccountId = String(body.verifierAccountId || "");
-        if (config.isProductionMode || getWalletToken()) {
-          const wfJob = workforceEngine.getJob(String(body.jobId || ""));
-          const authed = assertCustomerOrOperatorSession(wfJob?.customerAccountId || verifierAccountId);
-          if (verifierAccountId && verifierAccountId !== authed) {
-            throw new Error(
-              `ERR_ACCOUNT_IMPERSONATION_BLOCKED: Authenticated wallet ${authed} cannot verify as ${verifierAccountId}.`
-            );
-          }
+        const wfJob = workforceEngine.getJob(String(body.jobId || ""));
+        const authed = assertCustomerOrOperatorSession(wfJob?.customerAccountId || verifierAccountId);
+        if (verifierAccountId && verifierAccountId !== authed) {
+          throw new Error(
+            `ERR_ACCOUNT_IMPERSONATION_BLOCKED: Authenticated wallet ${authed} cannot verify as ${verifierAccountId}.`
+          );
         }
         const decision = String(body.decision || "") as "VERIFIED" | "REJECTED" | "DISPUTED";
         const submission = verificationEngine.verifyDelivery({
@@ -1113,6 +1356,7 @@ export function createSnowMoonApp(
             decision === "VERIFIED" ? "VERIFIED" : "FAILED"
           );
         }
+        await repo.flushPending();
         sendJson(res, 200, { ok: true, submission }, reqOrigin);
         return;
       }
@@ -1138,6 +1382,7 @@ export function createSnowMoonApp(
           paymentReceiptRoot: body.paymentReceiptRoot ? String(body.paymentReceiptRoot) : undefined,
           completedAtSec: typeof body.completedAtSec === "number" ? body.completedAtSec : undefined,
         });
+        await repo.flushPending();
         sendJson(res, 200, { ok: true, anchorPlan }, reqOrigin);
         return;
       }
@@ -1163,6 +1408,7 @@ export function createSnowMoonApp(
           signerAccountId,
           contractId: config.mainnetAuditContractId,
         });
+        await repo.flushPending();
         sendJson(res, 200, { ok: true, submission }, reqOrigin);
         return;
       }
@@ -1186,6 +1432,7 @@ export function createSnowMoonApp(
             signerAccountId: body.signerAccountId ? String(body.signerAccountId) : undefined,
           }
         );
+        await repo.flushPending();
         sendJson(res, 200, { ok: true, ...reconciliation }, reqOrigin);
         return;
       }
@@ -1203,6 +1450,7 @@ export function createSnowMoonApp(
           nearRpcAdapter,
           config
         );
+        await repo.flushPending();
         sendJson(
           res,
           200,
@@ -1219,58 +1467,246 @@ export function createSnowMoonApp(
       }
 
       if (method === "GET" && pathname === "/api/settlement/history") {
-        sendJson(res, 200, { ok: true, history: settlementEngine.listPaymentHistory() }, reqOrigin);
+        const all = settlementEngine.listPaymentHistory();
+        const rawLimit = Number(parsedUrl.searchParams.get("limit") || 50);
+        const limit = Number.isFinite(rawLimit) ? Math.min(100, Math.max(1, Math.trunc(rawLimit))) : 50;
+        const rawCursor = Number(parsedUrl.searchParams.get("cursor") || 0);
+        const cursor = Number.isFinite(rawCursor) && rawCursor >= 0 ? Math.trunc(rawCursor) : 0;
+        const page = all.slice(cursor, cursor + limit);
+        const nextCursor = cursor + page.length < all.length ? String(cursor + page.length) : null;
+        sendJson(res, 200, { ok: true, history: page, limit, cursor, nextCursor, total: all.length }, reqOrigin);
         return;
       }
 
       if (method === "POST" && pathname === "/api/settlement/prepare") {
+        assertAuthenticatedSession();
         const body = await readJsonBody(req);
-        const jobId = String(body.jobId || "");
+        const jobId = String(body.jobId || "").trim();
+        if (!jobId) {
+          throw new Error("ERR_INVALID_JOB_ID: jobId is required.");
+        }
         const wfJob = workforceEngine.getJob(jobId);
-        const customerAccountId = String(body.customerAccountId || wfJob?.customerAccountId || "");
-        if (config.isProductionMode || getWalletToken()) {
-          assertCustomerOrOperatorSession(customerAccountId);
+        if (!wfJob) {
+          throw new Error(`ERR_UNKNOWN_JOB: Workforce job ${jobId} does not exist.`);
         }
-        const sub = verificationEngine.getSubmission(jobId);
-        if (!sub) {
-          throw new Error(`ERR_DELIVERY_NOT_FOUND: No delivery submission for ${jobId}`);
+        if (
+          body.customerAccountId &&
+          String(body.customerAccountId) !== wfJob.customerAccountId
+        ) {
+          throw new Error(
+            `ERR_CUSTOMER_MISMATCH: Customer ${String(body.customerAccountId)} does not match job owner ${wfJob.customerAccountId}.`
+          );
         }
-        const settlement = settlementEngine.prepareSettlement(config, {
-          jobId,
-          kind: (String(body.kind || "PAYOUT_ACCEPT_DELIVERY") as "PAYOUT_ACCEPT_DELIVERY" | "CUSTOMER_REFUND"),
-          verificationStatus: sub.verificationStatus,
-          customerAccountId: String(body.customerAccountId || wfJob?.customerAccountId || ""),
-          workerAccountId: String(body.workerAccountId || sub.workerAccountId),
-          grossAmountAtomic: String(body.grossAmountAtomic || wfJob?.amountAtomic || ""),
-          platformFeeBps: body.platformFeeBps !== undefined ? Number(body.platformFeeBps) : 250,
-        });
+        const customerAccountId = wfJob.customerAccountId;
+        const sessionAccountId = assertCustomerOrOperatorSession(customerAccountId);
+        const kind = String(body.kind || "PAYOUT_ACCEPT_DELIVERY") as
+          | "PAYOUT_ACCEPT_DELIVERY"
+          | "CUSTOMER_REFUND";
+        let settlement;
+        if (kind === "CUSTOMER_REFUND") {
+          const reason = String(body.refundReason || "CUSTOMER_REJECTED") as RefundReason;
+          const adv = floatOrchestrator.getAdvanceByJob(jobId);
+          settlement = settlementEngine.prepareRefund(config, {
+            jobId,
+            refundReason: reason,
+            jobState: wfJob.state,
+            customerAccountId,
+            operatorAccountId: config.mainnetOperatorAccountId,
+            grossAmountAtomic: wfJob.amountAtomic,
+            deadlineSec: body.deadlineSec !== undefined ? Number(body.deadlineSec) : undefined,
+            callerIsOperatorOrAdmin: isOperatorOrAdminAccount(sessionAccountId),
+            floatPrincipalAtomic: adv?.status === "ISSUED" ? adv.principalAtomic : "0",
+          });
+        } else {
+          const sub = verificationEngine.getSubmission(jobId);
+          if (!sub) {
+            throw new Error(`ERR_DELIVERY_NOT_FOUND: No delivery submission for ${jobId}`);
+          }
+          settlement = settlementEngine.prepareSettlement(config, {
+            jobId,
+            kind,
+            verificationStatus: sub.verificationStatus,
+            customerAccountId,
+            workerAccountId: wfJob.assignedWorkerAccountId || sub.workerAccountId,
+            grossAmountAtomic: wfJob.amountAtomic,
+            platformFeeBps: 0,
+          });
+        }
+        await repo.flushPending();
         sendJson(res, 200, { ok: true, settlement }, reqOrigin);
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/settlement/prepare-refund") {
+        const body = await readJsonBody(req);
+        const jobId = String(body.jobId || "").trim();
+        if (!jobId) throw new Error("ERR_INVALID_JOB_ID: jobId is required.");
+        const wfJob = workforceEngine.getJob(jobId);
+        if (!wfJob) throw new Error(`ERR_UNKNOWN_JOB: Workforce job ${jobId} does not exist.`);
+        const sessionAccountId = assertCustomerOrOperatorSession(wfJob.customerAccountId);
+        const reason = String(body.refundReason || "NO_DELIVERY_EXPIRED") as RefundReason;
+        const adv = floatOrchestrator.getAdvanceByJob(jobId);
+        const settlement = settlementEngine.prepareRefund(config, {
+          jobId,
+          refundReason: reason,
+          jobState: wfJob.state,
+          customerAccountId: wfJob.customerAccountId,
+          operatorAccountId: config.mainnetOperatorAccountId,
+          grossAmountAtomic: wfJob.amountAtomic,
+          deadlineSec: body.deadlineSec !== undefined ? Number(body.deadlineSec) : undefined,
+          callerIsOperatorOrAdmin: isOperatorOrAdminAccount(sessionAccountId),
+          floatPrincipalAtomic: adv?.status === "ISSUED" ? adv.principalAtomic : "0",
+        });
+        await repo.flushPending();
+        sendJson(res, 200, { ok: true, settlement }, reqOrigin);
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/near/float/evaluate") {
+        const body = await readJsonBody(req);
+        const jobId = String(body.jobId || "").trim();
+        if (!jobId) throw new Error("ERR_INVALID_JOB_ID: jobId is required.");
+        const wfJob = workforceEngine.getJob(jobId);
+        if (!wfJob) throw new Error(`ERR_UNKNOWN_JOB: Workforce job ${jobId} does not exist.`);
+        assertCustomerOrOperatorSession(wfJob.customerAccountId);
+        const escrow = escrowTracker.listRecords().find((j) => j.jobId === jobId);
+        const advance = await floatOrchestrator.evaluateAndPrepareFromChain(config, nearRpcAdapter, {
+          jobId,
+          customerAccountId: wfJob.customerAccountId,
+          operatorAccountId: config.mainnetOperatorAccountId,
+          escrowConfirmed: Boolean(escrow?.escrowState === "FINAL_CONFIRMED" || wfJob.state !== "CREATED"),
+        });
+        sendJson(res, 200, { ok: true, advance }, reqOrigin);
+        return;
+      }
+
+      if (method === "GET" && pathname.startsWith("/api/deliverables/") && pathname.endsWith("/preview")) {
+        const parts = pathname.split("/");
+        const jobId = decodeURIComponent(parts[3] || "");
+        const wfJob = workforceEngine.getJob(jobId);
+        if (!wfJob) throw new Error(`ERR_UNKNOWN_JOB: Workforce job ${jobId} does not exist.`);
+        const sessionAccountId = assertAuthenticatedSession();
+        if (sessionAccountId !== wfJob.customerAccountId) {
+          throw new Error("ERR_CUSTOMER_OWNERSHIP_REQUIRED: Only the job customer may preview deliverable.");
+        }
+        const preview = deliverableVault.getCustomerPreview(jobId, sessionAccountId);
+        sendJson(res, 200, { ok: true, preview }, reqOrigin);
+        return;
+      }
+
+      if (method === "POST" && pathname.startsWith("/api/deliverables/") && pathname.endsWith("/reject")) {
+        const parts = pathname.split("/");
+        const jobId = decodeURIComponent(parts[3] || "");
+        const body = await readJsonBody(req);
+        const wfJob = workforceEngine.getJob(jobId);
+        if (!wfJob) throw new Error(`ERR_UNKNOWN_JOB: Workforce job ${jobId} does not exist.`);
+        const sessionAccountId = assertAuthenticatedSession();
+        if (sessionAccountId !== wfJob.customerAccountId) {
+          throw new Error("ERR_CUSTOMER_OWNERSHIP_REQUIRED: Only the job customer may reject deliverable.");
+        }
+        const reason = String(body.reason || "Customer rejected preview").trim() || "Customer rejected preview";
+        const deliverable = deliverableVault.markRejected(jobId, sessionAccountId, reason);
+        workforceEngine.updateJobState(jobId, "REJECTED");
+        const adv = floatOrchestrator.getAdvanceByJob(jobId);
+        const refundSettlement = settlementEngine.prepareRefund(config, {
+          jobId,
+          refundReason: "CUSTOMER_REJECTED",
+          jobState: "REJECTED",
+          customerAccountId: wfJob.customerAccountId,
+          operatorAccountId: config.mainnetOperatorAccountId,
+          grossAmountAtomic: wfJob.amountAtomic,
+          callerIsOperatorOrAdmin: false,
+          floatPrincipalAtomic: adv?.status === "ISSUED" ? adv.principalAtomic : "0",
+        });
+        await repo.flushPending();
+        sendJson(res, 200, { ok: true, deliverable: { status: deliverable.status, rejectionReason: deliverable.rejectionReason }, refundSettlement }, reqOrigin);
+        return;
+      }
+
+      if (method === "POST" && pathname.startsWith("/api/deliverables/") && pathname.endsWith("/download-token")) {
+        const parts = pathname.split("/");
+        const jobId = decodeURIComponent(parts[3] || "");
+        const wfJob = workforceEngine.getJob(jobId);
+        if (!wfJob) throw new Error(`ERR_UNKNOWN_JOB: Workforce job ${jobId} does not exist.`);
+        const sessionAccountId = assertAuthenticatedSession();
+        if (sessionAccountId !== wfJob.customerAccountId) {
+          throw new Error("ERR_CUSTOMER_OWNERSHIP_REQUIRED: Only the job customer may request download.");
+        }
+        const settlement = settlementEngine.getSettlementByJob(jobId);
+        const signed = deliverableVault.issueSignedDownloadToken({
+          jobId,
+          customerAccountId: sessionAccountId,
+          jobState: wfJob.state,
+          settlementConfirmed: Boolean(settlement?.status === "CONFIRMED" && settlement?.onChainConfirmed),
+          settlementKind: settlement?.kind || "",
+        });
+        sendJson(res, 200, { ok: true, ...signed }, reqOrigin);
+        return;
+      }
+
+      if (method === "GET" && pathname.startsWith("/api/deliverables/") && pathname.endsWith("/download")) {
+        const parts = pathname.split("/");
+        const jobId = decodeURIComponent(parts[3] || "");
+        const token = parsedUrl.searchParams.get("token") || "";
+        const wfJob = workforceEngine.getJob(jobId);
+        if (!wfJob) throw new Error(`ERR_UNKNOWN_JOB: Workforce job ${jobId} does not exist.`);
+        const sessionAccountId = assertAuthenticatedSession();
+        const settlement = settlementEngine.getSettlementByJob(jobId);
+        const { record, content } = await deliverableVault.verifyAndReadFullDeliverableAsync({
+          token,
+          callerCustomerAccountId: sessionAccountId,
+          jobState: wfJob.state,
+          settlementConfirmed: Boolean(settlement?.status === "CONFIRMED" && settlement?.onChainConfirmed),
+          singleUse: true,
+        });
+        res.writeHead(200, {
+          "Content-Type": record.mimeType,
+          "Content-Disposition": `attachment; filename="${record.filename}"`,
+          "X-Content-Hash": record.contentHash,
+          "Cache-Control": "no-store",
+        });
+        res.end(content);
+        return;
+      }
+
+      if (method === "GET" && pathname === "/api/monitoring/health") {
+        const stuckJobs = workforceEngine.listJobs().filter((j) => j.state === "EXECUTING" || j.state === "ASSIGNED");
+        const pendingAdvs = floatOrchestrator.listAdvances().filter((a) => a.status === "PENDING");
+        sendJson(
+          res,
+          200,
+          {
+            ok: true,
+            monitoring: monitoring.snapshot({
+              stuckJobsCount: stuckJobs.length,
+              pendingAdvancesCount: pendingAdvs.length,
+            }),
+          },
+          reqOrigin
+        );
         return;
       }
 
       if (method === "POST" && pathname === "/api/settlement/submit-tx") {
         const body = await readJsonBody(req);
         const signerAccountId = String(body.signerAccountId || "");
-        if (config.isProductionMode || getWalletToken()) {
-          assertCustomerOrOperatorSession(signerAccountId);
-        }
+        assertCustomerOrOperatorSession(signerAccountId);
         const settlement = settlementEngine.submitSettlementTx({
           settlementId: String(body.settlementId || ""),
           txHash: String(body.txHash || ""),
           signerAccountId: String(body.signerAccountId || ""),
         });
+        await repo.flushPending();
         sendJson(res, 200, { ok: true, settlement }, reqOrigin);
         return;
       }
 
       if (method === "POST" && pathname === "/api/settlement/reconcile") {
         const body = await readJsonBody(req);
-        if (config.isProductionMode || getWalletToken()) {
-          const existing = settlementEngine.listSettlements().find(
-            (s) => s.settlementId === String(body.settlementId || "")
-          );
-          assertCustomerOrOperatorSession(existing?.customerAccountId);
-        }
+        const existing = settlementEngine.listSettlements().find(
+          (s) => s.settlementId === String(body.settlementId || "")
+        );
+        assertCustomerOrOperatorSession(existing?.customerAccountId);
         const settlement = await settlementEngine.reconcileSettlementTx(nearRpcAdapter, {
           settlementId: String(body.settlementId || ""),
           txHash: String(body.txHash || ""),
@@ -1291,6 +1727,7 @@ export function createSnowMoonApp(
             }
           }
         }
+        await repo.flushPending();
         sendJson(res, 200, { ok: true, settlement }, reqOrigin);
         return;
       }
@@ -1331,42 +1768,57 @@ export function createSnowMoonApp(
       }
 
       if (method === "POST" && pathname === "/api/outlayer/execute") {
+        const workerToken = getWorkerToken();
+        if (!workerToken) {
+          assertOperatorOrAdminSession();
+        }
         const body = await readJsonBody(req);
-        if (config.isProductionMode) {
-          const workerToken = getWorkerToken();
-          if (workerToken) {
-            workforceEngine.assertWorkerAuthorized(String(body.workerId || ""), workerToken);
-          } else {
-            assertOperatorOrAdminSession();
-          }
+        const workerId = String(body.workerId || "").trim();
+        const jobId = String(body.jobId || "").trim();
+        if (!jobId) {
+          throw new Error("ERR_INVALID_JOB_ID: jobId is required.");
+        }
+        if (!workerId) {
+          throw new Error("ERR_INVALID_WORKER_ID: workerId is required.");
+        }
+        const wfJob = workforceEngine.getJob(jobId);
+        if (!wfJob) {
+          throw new Error(`ERR_UNKNOWN_JOB: Workforce job ${jobId} does not exist.`);
+        }
+        if (!wfJob.assignedWorkerId || wfJob.assignedWorkerId !== workerId) {
+          throw new Error(
+            `ERR_WORKER_NOT_ASSIGNED: Worker ${workerId} is not assigned to job ${jobId}.`
+          );
+        }
+        if (workerToken) {
+          workforceEngine.assertWorkerAuthorized(workerId, workerToken, config.isProductionMode);
         }
         const record = await outlayerExecAdapter.executeAndVerify({
-          jobId: String(body.jobId || ""),
-          workerId: String(body.workerId || ""),
+          jobId,
+          workerId,
           prompt: String(body.prompt || ""),
           evidenceHash: String(body.evidenceHash || "0x" + "11".repeat(32)),
           asyncMode: Boolean(body.asyncMode),
         });
+        await repo.flushPending();
         sendJson(res, 200, { ok: true, record }, reqOrigin);
         return;
       }
 
       if (method === "POST" && pathname === "/api/outlayer/poll") {
         const body = await readJsonBody(req);
-        if (config.isProductionMode || getWalletToken()) {
-          assertCustomerOrOperatorSession();
-        }
+        assertAuthenticatedSession();
         const record = await outlayerExecAdapter.pollCall(String(body.requestId || ""));
+        await repo.flushPending();
         sendJson(res, 200, { ok: true, record }, reqOrigin);
         return;
       }
 
       if (method === "POST" && pathname === "/api/outlayer/verify-attestation") {
         const body = await readJsonBody(req);
-        if (config.isProductionMode || getWalletToken()) {
-          assertCustomerOrOperatorSession();
-        }
+        assertAuthenticatedSession();
         const record = await outlayerExecAdapter.verifyAttestation(String(body.requestId || ""));
+        await repo.flushPending();
         sendJson(res, 200, { ok: true, record }, reqOrigin);
         return;
       }
@@ -1387,13 +1839,12 @@ export function createSnowMoonApp(
 
       if (method === "POST" && pathname === "/api/workforce/jobs/reassign") {
         const body = await readJsonBody(req);
-        if (config.isProductionMode || getWalletToken()) {
-          assertOperatorOrAdminSession();
-        }
+        assertOperatorOrAdminSession();
         const job = workforceEngine.reassignJob(
           String(body.jobId || ""),
           body.workerId ? String(body.workerId) : undefined
         );
+        await repo.flushPending();
         sendJson(res, 200, { ok: true, job }, reqOrigin);
         return;
       }
@@ -1431,6 +1882,7 @@ export function createSnowMoonApp(
           sourceWalletAddress: String(body.sourceWalletAddress || ""),
           deadlineIso: body.deadlineIso ? String(body.deadlineIso) : undefined,
         });
+        await repo.flushPending();
         sendJson(res, 200, { ok: true, ...resQuote }, reqOrigin);
         return;
       }
@@ -1448,35 +1900,120 @@ export function createSnowMoonApp(
           txHash: String(body.txHash || ""),
           customerNearAccount,
         });
+        await repo.flushPending();
         sendJson(res, 200, { ok: true, record }, reqOrigin);
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/intents/widget-quote") {
+        const body = await readJsonBody(req);
+        const recipient = String(body.recipient || body.refundTo || "").trim();
+        if (recipient) {
+          assertCustomerOrOperatorSession(recipient);
+        } else {
+          assertAuthenticatedSession();
+        }
+        const result = await intentsClient.proxyWidgetQuote(nearRpcAdapter, body);
+        if (result.record) {
+          await repo.flushPending();
+        }
+        sendJson(res, 200, { ok: true, ...result }, reqOrigin);
+        return;
+      }
+
+      if (method === "GET" && pathname.startsWith("/api/intents/widget-api/api/tokens/")) {
+        const discovered = await intentsClient.fetchSupportedTokens(false);
+        sendJson(res, 200, { asset_stats: [], tokens: discovered.tokens || [] }, reqOrigin);
+        return;
+      }
+
+      if (method === "GET" && pathname.startsWith("/api/intents/widget-api/api/incidents/")) {
+        sendJson(res, 200, [], reqOrigin);
+        return;
+      }
+
+      if (method === "GET" && pathname.startsWith("/api/intents/widget-api/api/status/")) {
+        const depositAddress = parsedUrl.searchParams.get("depositAddress") || "";
+        const record = await intentsClient.pollStatus(depositAddress);
+        await repo.flushPending();
+        sendJson(res, 200, {
+          status: record.status,
+          swapDetails: (record as { swapDetails?: Record<string, unknown> }).swapDetails || {},
+          updatedAt: record.updatedAt,
+        }, reqOrigin);
+        return;
+      }
+
+      if (method === "POST" && pathname.startsWith("/api/intents/widget-api/rpc/")) {
+        assertAuthenticatedSession();
+        const body = await readJsonBody(req);
+        const rpcMethod = String(body.method || "").trim();
+        const ALLOWED_WIDGET_RPC_METHODS = new Set([
+          "query",
+          "block",
+          "gas_price",
+          "tx",
+          "EXPERIMENTAL_tx_status",
+          "status",
+          "network_info",
+        ]);
+        if (!ALLOWED_WIDGET_RPC_METHODS.has(rpcMethod)) {
+          throw new Error(`ERR_RPC_METHOD_FORBIDDEN: RPC method "${rpcMethod}" is not allowed on widget proxy.`);
+        }
+        const rpcResp = await fetch(config.nearRpcUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const rpcJson = (await rpcResp.json().catch(() => ({}))) as Record<string, unknown>;
+        sendJson(res, rpcResp.status, rpcJson, reqOrigin);
         return;
       }
 
       if (method === "GET" && pathname === "/api/intents/status") {
         const depositAddress = parsedUrl.searchParams.get("depositAddress") || "";
         const record = await intentsClient.pollStatus(depositAddress);
+        await repo.flushPending();
         sendJson(res, 200, { ok: true, record }, reqOrigin);
         return;
       }
 
       if (method === "POST" && pathname === "/api/intents/verify-destination") {
         const body = await readJsonBody(req);
+        const depositAddress = String(body.depositAddress || "");
+        const existingIntent = intentsClient
+          .listIntents()
+          .find((i) => i.depositAddress === depositAddress);
+        const expectedCustomer = String(
+          body.customerNearAccount ||
+            existingIntent?.customerNearAccount ||
+            body.expectedRecipient ||
+            ""
+        );
+        walletSessionManager.assertAuthorizedCustomer(getWalletToken(), expectedCustomer);
         const record = await intentsClient.verifyDestinationDelivery(nearRpcAdapter, {
-          depositAddress: String(body.depositAddress || ""),
+          depositAddress,
           expectedRecipient: String(body.expectedRecipient || ""),
           expectedTokenContract: body.expectedTokenContract
             ? String(body.expectedTokenContract)
             : undefined,
         });
+        await repo.flushPending();
         sendJson(res, 200, { ok: true, record }, reqOrigin);
         return;
       }
 
       if (method === "POST" && pathname === "/api/intents/prepare-deposit") {
         const body = await readJsonBody(req);
-        const depositPlan = intentsClient.prepareSourceWalletDeposit(
-          String(body.depositAddress || "")
+        const depositAddress = String(body.depositAddress || "");
+        const existingIntent = intentsClient
+          .listIntents()
+          .find((i) => i.depositAddress === depositAddress);
+        const expectedCustomer = String(
+          body.customerNearAccount || existingIntent?.customerNearAccount || ""
         );
+        walletSessionManager.assertAuthorizedCustomer(getWalletToken(), expectedCustomer);
+        const depositPlan = intentsClient.prepareSourceWalletDeposit(depositAddress);
         sendJson(res, 200, { ok: true, depositPlan }, reqOrigin);
         return;
       }
@@ -1500,6 +2037,7 @@ export function createSnowMoonApp(
           termsHash: String(body.termsHash || "0x" + "00".repeat(32)),
           expectedCustomerAccount: customerAccountId,
         });
+        await repo.flushPending();
         sendJson(
           res,
           200,
@@ -1525,6 +2063,7 @@ export function createSnowMoonApp(
           existingJob.customerAccountId
         );
         const job = workforceEngine.cancelJob(jobId);
+        await repo.flushPending();
         sendJson(res, 200, { ok: true, job }, reqOrigin);
         return;
       }
@@ -1567,6 +2106,7 @@ export function createSnowMoonApp(
           200,
           {
             ok: true,
+            restrictedBetaMode: config.restrictedBetaMode,
             uptimeSec: Math.floor((Date.now() - startedAtMs) / 1000),
             network: config.network,
             isProductionMode: config.isProductionMode,
@@ -1597,6 +2137,7 @@ export function createSnowMoonApp(
           200,
           {
             ok: true,
+            restrictedBetaMode: config.restrictedBetaMode,
             uptimeSec: Math.floor((Date.now() - startedAtMs) / 1000),
             requests: { ...metrics },
             counts: {
@@ -1920,12 +2461,12 @@ export function createSnowMoonApp(
           body.decidedBy ||
             (config.isProductionMode ? config.mainnetAdminAccountId : config.operatorAccountId)
         );
+        const walletToken =
+          typeof req.headers["x-wallet-session"] === "string"
+            ? req.headers["x-wallet-session"]
+            : undefined;
+        walletSessionManager.assertAuthorizedCustomer(walletToken, decidedBy);
         if (config.isProductionMode) {
-          const walletToken =
-            typeof req.headers["x-wallet-session"] === "string"
-              ? req.headers["x-wallet-session"]
-              : undefined;
-          walletSessionManager.assertAuthorizedCustomer(walletToken, decidedBy);
           if (
             decidedBy !== config.mainnetAdminAccountId &&
             decidedBy !== config.mainnetAuditOperatorAccountId

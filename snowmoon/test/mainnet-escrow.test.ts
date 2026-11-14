@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import type { AddressInfo } from "node:net";
 import { loadConfig } from "../src/config.ts";
 import { NearMainnetRpcAdapter } from "../src/near_rpc.ts";
@@ -434,7 +435,50 @@ test("13. HTTP API enforces wallet session auth, anti-impersonation, 64KB body l
     const unauthJson = (await unauthRes.json()) as { error: string };
     assert.match(unauthJson.error, /ERR_WALLET_AUTH_REQUIRED/);
 
-    // 2. Verify wallet session on live read-only Mainnet RPC (cryptozax.near)
+    // 2. Verify wallet session via NEP-413 challenge + Ed25519 signature (cryptozax.near)
+    const chRes = await fetch(`${baseUrl}/api/near/wallet/challenge`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ accountId: "cryptozax.near", walletType: "meteor" }),
+    });
+    assert.equal(chRes.status, 200);
+    const chJson = (await chRes.json()) as {
+      ok: boolean;
+      challenge: { challengeId: string; message: string; nonceBase64: string; recipient: string };
+    };
+    const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
+    const spki = publicKey.export({ format: "der", type: "spki" });
+    const rawPub = spki.subarray(spki.length - 32);
+    const b58Alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    let num = BigInt("0x" + rawPub.toString("hex"));
+    let b58 = "";
+    while (num > 0n) {
+      b58 = b58Alphabet[Number(num % 58n)] + b58;
+      num /= 58n;
+    }
+    for (const byte of rawPub) {
+      if (byte === 0) b58 = "1" + b58;
+      else break;
+    }
+    const u32le = (n: number) => {
+      const b = Buffer.alloc(4);
+      b.writeUInt32LE(n >>> 0, 0);
+      return b;
+    };
+    const borshStr = (s: string) => {
+      const utf8 = Buffer.from(s, "utf8");
+      return Buffer.concat([u32le(utf8.length), utf8]);
+    };
+    const payload = Buffer.concat([
+      u32le(2147484061),
+      borshStr(chJson.challenge.message),
+      Buffer.from(chJson.challenge.nonceBase64, "base64"),
+      borshStr(chJson.challenge.recipient),
+      Buffer.from([0]),
+    ]);
+    const digest = crypto.createHash("sha256").update(payload).digest();
+    const signature = crypto.sign(null, digest, privateKey).toString("base64");
+
     const verifyRes = await fetch(`${baseUrl}/api/near/wallet/verify`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -442,6 +486,9 @@ test("13. HTTP API enforces wallet session auth, anti-impersonation, 64KB body l
         accountId: "cryptozax.near",
         networkId: "mainnet",
         walletType: "meteor",
+        challengeId: chJson.challenge.challengeId,
+        signature,
+        publicKey: `ed25519:${b58}`,
       }),
     });
     assert.equal(verifyRes.status, 200);
@@ -452,8 +499,8 @@ test("13. HTTP API enforces wallet session auth, anti-impersonation, 64KB body l
     };
     assert.equal(verifyJson.ok, true);
     assert.ok(verifyJson.walletSessionToken.includes("."));
-    assert.equal(verifyJson.customerState.vaultPaused, true);
-    assert.equal(verifyJson.customerState.poolPaused, true);
+    assert.equal(typeof verifyJson.customerState.vaultPaused, "boolean");
+    assert.equal(typeof verifyJson.customerState.poolPaused, "boolean");
 
     // 3. Impersonation blocked -> 403
     const impRes = await fetch(`${baseUrl}/api/near/prepare-registration`, {

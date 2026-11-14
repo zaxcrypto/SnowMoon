@@ -291,6 +291,55 @@ impl Contract {
         );
     }
 
+    /// Admin-only recovery for a flagged stuck `AdvancePayout` (`PayoutPending`) operation.
+    /// Removes `op_id` from `pending_ops` so `on_payout_complete` cannot duplicate payouts,
+    /// optionally credits `claimable_usdc` for pull-claim, and transitions the advance to `Issued`
+    /// so `accept_delivery` repays the pool and `refund` still performs 100% customer-first restitution.
+    #[payable]
+    pub fn resolve_stuck_advance_payout(&mut self, op_id: u64, credit_claimable: bool) {
+        assert_one_yocto();
+        self.require_admin();
+        let existing = self.pending_ops.get(&op_id).expect("ERR_UNKNOWN_OP");
+        require!(existing.flagged_stuck, "ERR_OP_NOT_FLAGGED_STUCK");
+        require!(
+            env::block_height() >= existing.created_at_block + 100,
+            "ERR_STUCK_THRESHOLD_NOT_REACHED"
+        );
+        let job_id = match existing.kind {
+            PendingOpKind::AdvancePayout { job_id } => job_id,
+            _ => env::panic_str("ERR_NOT_ADVANCE_PAYOUT_OP"),
+        };
+
+        let op = self.pending_ops.remove(&op_id).expect("ERR_UNKNOWN_OP");
+        self.total_in_flight_usdc = self.total_in_flight_usdc.saturating_sub(op.amount);
+        self.flagged_stuck_count = self.flagged_stuck_count.saturating_sub(1);
+
+        if credit_claimable {
+            self.credit_claimable(&op.recipient, op.amount, op_id, 0, None);
+        }
+
+        let adv = self.advances.get_mut(&job_id).expect("ERR_NO_ADVANCE");
+        require!(
+            adv.status == AdvanceStatus::PayoutPending && adv.active_op_id == Some(op_id),
+            "ERR_ADVANCE_NOT_PAYOUT_PENDING"
+        );
+        adv.status = AdvanceStatus::Issued;
+        adv.active_op_id = None;
+
+        events::advance_issued(
+            &job_id,
+            &adv.operator_org,
+            adv.principal,
+            adv.fee,
+            adv.rate_bps,
+            if credit_claimable {
+                "stuck_recovery_claimable"
+            } else {
+                "stuck_recovery_settled"
+            },
+        );
+    }
+
     pub fn claimable_of(&self, account_id: AccountId) -> U128 {
         U128(self.claimable_usdc.get(&account_id).map(|e| e.balance).unwrap_or(0))
     }

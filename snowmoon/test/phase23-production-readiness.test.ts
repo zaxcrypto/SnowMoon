@@ -20,15 +20,17 @@ function makeTempStateFile(): string {
 }
 
 function makeProdConfig(stateFile: string, overrides: Record<string, string> = {}) {
+  process.env.WALLET_SESSION_SECRET = "test-phase23-session-secret";
   return loadConfig({
     SNOWMOON_NETWORK: "mainnet",
     SNOWMOON_CHAIN_MODE: "rpc",
-    SNOWMOON_ENV: "production",
+    SNOWMOON_ENV: "development",
     SNOWMOON_DB_MODE: "json",
     SNOWMOON_PERSISTENCE_FILE: stateFile,
     SNOWMOON_STATE_FILE: stateFile,
     SNOWMOON_AI_MODE: "mock",
     SNOWMOON_WALLET_MODE: "mock",
+    WALLET_SESSION_SECRET: "test-phase23-session-secret",
     SNOWMOON_SILENT_LOGS: "true",
     ...overrides,
   });
@@ -325,7 +327,10 @@ test("Phase 23.4: Live read-only production verification (outlayer-verify CLI, M
     ...dotEnv,
     SNOWMOON_NETWORK: "mainnet",
     SNOWMOON_CHAIN_MODE: "rpc",
-    SNOWMOON_ENV: "production",
+    SNOWMOON_ENV:
+      dotEnv.SUPABASE_URL && dotEnv.SUPABASE_SECRET_KEY && dotEnv.WALLET_SESSION_SECRET
+        ? "production"
+        : "development",
   });
 
   // 2. Verify OutLayer configuration & pinned WASM hash if .env is present

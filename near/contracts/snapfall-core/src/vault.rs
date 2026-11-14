@@ -8,7 +8,19 @@ use near_sdk::json_types::U128;
 use near_sdk::serde_json::json;
 use near_sdk::{env, near, require, AccountId, Promise, PromiseOrValue};
 
+/// Maximum allowed job duration from creation: 90 days (prevents u64::MAX, far-future, or ms-precision deadlines).
+pub const MAX_JOB_DURATION_SEC: u64 = 90 * 24 * 60 * 60;
+
 impl Contract {
+    fn validate_deadline(&self, deadline: u64) {
+        let now = block_timestamp_sec();
+        require!(deadline > now, "ERR_DEADLINE_EXPIRED");
+        require!(
+            deadline <= now.saturating_add(MAX_JOB_DURATION_SEC),
+            "ERR_DEADLINE_TOO_FAR"
+        );
+    }
+
     fn no_payout_pending_advance(&self, job_id: &Hex32) -> bool {
         self.advances
             .get(job_id)
@@ -31,6 +43,7 @@ impl Contract {
         require!(self.max_job_payment > 0, "ERR_CAP_NOT_SET");
         require!(amount > 0, "ERR_ZERO_AMOUNT");
         require!(amount <= self.max_job_payment, "ERR_JOB_TOO_LARGE");
+        self.validate_deadline(deadline);
 
         // POD-03A: sender_id is fixed as customer, storage sponsor and (Decision 2) id creator.
         let locked = self.lock_storage_from_credits(&sender_id);
@@ -113,6 +126,7 @@ impl Contract {
         require!(self.max_job_payment > 0, "ERR_CAP_NOT_SET");
         require!(customer_payment.0 > 0, "ERR_ZERO_AMOUNT");
         require!(customer_payment.0 <= self.max_job_payment, "ERR_JOB_TOO_LARGE");
+        self.validate_deadline(deadline);
 
         let locked = self.lock_storage_for_create_job(&caller);
         let (job_id, seq) = self.issue_job_id(&caller);

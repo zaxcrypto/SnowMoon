@@ -16,7 +16,11 @@ import {
 
 export type SupportedWalletType =
   | "meteor"
+  | "meteor-wallet"
   | "mynearwallet"
+  | "my-near-wallet"
+  | "here-wallet"
+  | "wallet-selector"
   | "injected-selector"
   | "mock-wallet";
 
@@ -92,7 +96,11 @@ export interface MainnetEscrowJobRecord {
 
 const SUPPORTED_WALLETS = new Set<SupportedWalletType>([
   "meteor",
+  "meteor-wallet",
   "mynearwallet",
+  "my-near-wallet",
+  "here-wallet",
+  "wallet-selector",
   "injected-selector",
   "mock-wallet",
 ]);
@@ -109,15 +117,314 @@ export function assertValidTxHash(rawHash: string): string {
   return hash;
 }
 
+const B58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+function decodeBase58(input: string): Buffer {
+  let num = 0n;
+  for (const ch of input) {
+    const idx = B58_ALPHABET.indexOf(ch);
+    if (idx < 0) {
+      throw new Error("ERR_WALLET_SIGNATURE_INVALID: Invalid base58 character.");
+    }
+    num = num * 58n + BigInt(idx);
+  }
+  const bytes: number[] = [];
+  while (num > 0n) {
+    bytes.push(Number(num & 0xffn));
+    num >>= 8n;
+  }
+  bytes.reverse();
+  let zeros = 0;
+  for (const ch of input) {
+    if (ch === "1") zeros += 1;
+    else break;
+  }
+  return Buffer.concat([Buffer.alloc(zeros), Buffer.from(bytes)]);
+}
+
+function encodeNep413Payload(params: {
+  message: string;
+  nonce: Buffer;
+  recipient: string;
+  callbackUrl?: string;
+}): Buffer {
+  const u32le = (n: number): Buffer => {
+    const b = Buffer.alloc(4);
+    b.writeUInt32LE(n >>> 0, 0);
+    return b;
+  };
+  const borshStr = (s: string): Buffer => {
+    const utf8 = Buffer.from(s, "utf8");
+    return Buffer.concat([u32le(utf8.length), utf8]);
+  };
+  // NEP-413 Borsh tag = (1 << 31) + 413 = 2147484061
+  const tagBuf = u32le(2147484061);
+  const cbBuf = params.callbackUrl
+    ? Buffer.concat([Buffer.from([1]), borshStr(params.callbackUrl)])
+    : Buffer.from([0]);
+  return Buffer.concat([
+    tagBuf,
+    borshStr(params.message),
+    params.nonce,
+    borshStr(params.recipient),
+    cbBuf,
+  ]);
+}
+
+export interface WalletAuthChallenge {
+  challengeId: string;
+  accountId: string;
+  message: string;
+  nonce: Buffer;
+  nonceBase64: string;
+  recipient: string;
+  expiresAtMs: number;
+  expiresAt: string;
+  consumed: boolean;
+}
+
 export class WalletSessionManager {
   private readonly secret: Buffer;
   private readonly ttlMs: number;
+  private readonly repo?: SnowMoonRepository;
+  private readonly challenges = new Map<string, WalletAuthChallenge>();
 
-  constructor(secretSeed?: string, ttlMs = 2 * 60 * 60 * 1000) {
+  constructor(
+    secretSeed?: string,
+    ttlMs = 2 * 60 * 60 * 1000,
+    options?: { requireSecret?: boolean; repo?: SnowMoonRepository }
+  ) {
+    if (options?.requireSecret && (!secretSeed || !secretSeed.trim())) {
+      throw new Error(
+        "ERR_PRODUCTION_SESSION_SECRET_REQUIRED: WALLET_SESSION_SECRET is required in production (random fallback is forbidden)."
+      );
+    }
     this.secret = secretSeed
       ? crypto.createHash("sha256").update(secretSeed).digest()
       : crypto.randomBytes(32);
     this.ttlMs = ttlMs;
+    this.repo = options?.repo;
+    this.reloadFromRepo();
+  }
+
+  public reloadFromRepo(): void {
+    if (!this.repo) return;
+    const rows = (this.repo.getCollection("walletChallenges") || []) as Record<string, unknown>[];
+    const now = Date.now();
+    this.challenges.clear();
+    for (const row of rows) {
+      const challengeId = String(row.challengeId || "");
+      const nonceBase64 = String(row.nonceBase64 || "");
+      const expiresAtMs = Number(row.expiresAtMs || 0);
+      if (!challengeId || !nonceBase64 || expiresAtMs + 60_000 < now) continue;
+      this.challenges.set(challengeId, {
+        challengeId,
+        accountId: String(row.accountId || ""),
+        message: String(row.message || ""),
+        nonce: Buffer.from(nonceBase64, "base64"),
+        nonceBase64,
+        recipient: String(row.recipient || "snowmoon.near"),
+        expiresAtMs,
+        expiresAt: String(row.expiresAt || new Date(expiresAtMs).toISOString()),
+        consumed: Boolean(row.consumed),
+      });
+    }
+  }
+
+  private persistChallenges(): void {
+    if (!this.repo) return;
+    const now = Date.now();
+    const rows = Array.from(this.challenges.values())
+      .filter((ch) => ch.expiresAtMs + 60_000 >= now)
+      .map((ch) => ({
+        challengeId: ch.challengeId,
+        accountId: ch.accountId,
+        message: ch.message,
+        nonceBase64: ch.nonceBase64,
+        recipient: ch.recipient,
+        expiresAtMs: ch.expiresAtMs,
+        expiresAt: ch.expiresAt,
+        consumed: ch.consumed,
+      }));
+    this.repo.saveCollection("walletChallenges", rows);
+  }
+
+  public issueChallenge(params: {
+    accountId: string;
+    recipient?: string;
+    ttlMs?: number;
+  }): {
+    challengeId: string;
+    accountId: string;
+    message: string;
+    nonceBase64: string;
+    recipient: string;
+    expiresAt: string;
+  } {
+    assertValidNearAccountId(params.accountId, "accountId");
+    const now = Date.now();
+    if (this.challenges.size > 1000) {
+      for (const [id, ch] of this.challenges.entries()) {
+        if (ch.consumed || now > ch.expiresAtMs) {
+          this.challenges.delete(id);
+        }
+      }
+    }
+    const challengeId = `chal_${crypto.randomUUID()}`;
+    const nonce = crypto.randomBytes(32);
+    const nonceBase64 = nonce.toString("base64");
+    const recipient = (params.recipient || "snowmoon.near").trim();
+    const message = `Sign in to SnowMoon on NEAR Mainnet\nAccount: ${params.accountId}\nChallenge: ${challengeId}`;
+    const expiresAtMs = now + (params.ttlMs ?? 5 * 60 * 1000);
+    const expiresAt = new Date(expiresAtMs).toISOString();
+    this.challenges.set(challengeId, {
+      challengeId,
+      accountId: params.accountId,
+      message,
+      nonce,
+      nonceBase64,
+      recipient,
+      expiresAtMs,
+      expiresAt,
+      consumed: false,
+    });
+    this.persistChallenges();
+    return {
+      challengeId,
+      accountId: params.accountId,
+      message,
+      nonceBase64,
+      recipient,
+      expiresAt,
+    };
+  }
+
+  private verifySignatureAgainstChallenge(
+    ch: {
+      accountId: string;
+      message: string;
+      nonce: Buffer;
+      recipient: string;
+    },
+    params: {
+      accountId: string;
+      signature: string;
+      publicKey: string;
+      callbackUrl?: string;
+    }
+  ): { verified: true; accountId: string; publicKey: string } {
+    const pkTrimmed = params.publicKey.trim();
+    if (!pkTrimmed.startsWith("ed25519:")) {
+      throw new Error("ERR_WALLET_SIGNATURE_INVALID: Public key must use ed25519: prefix.");
+    }
+    const pubRaw = decodeBase58(pkTrimmed.slice("ed25519:".length));
+    if (pubRaw.length !== 32) {
+      throw new Error("ERR_WALLET_SIGNATURE_INVALID: Invalid Ed25519 public key length.");
+    }
+
+    const sigStr = params.signature.trim().replace(/^ed25519:/, "");
+    let sigBuf: Buffer = Buffer.from(sigStr, "base64");
+    if (sigBuf.length !== 64) {
+      try {
+        sigBuf = decodeBase58(sigStr);
+      } catch {
+        // handled below
+      }
+    }
+    if (sigBuf.length !== 64) {
+      throw new Error("ERR_WALLET_SIGNATURE_INVALID: Signature must be 64-byte Ed25519.");
+    }
+
+    const spkiPrefix = Buffer.from("302a300506032b6570032100", "hex");
+    const pubKeyObj = crypto.createPublicKey({
+      key: Buffer.concat([spkiPrefix, pubRaw]),
+      format: "der",
+      type: "spki",
+    });
+
+    const payload = encodeNep413Payload({
+      message: ch.message,
+      nonce: ch.nonce,
+      recipient: ch.recipient,
+      callbackUrl: params.callbackUrl,
+    });
+    const digest = crypto.createHash("sha256").update(payload).digest();
+    const ok = crypto.verify(null, digest, pubKeyObj, sigBuf);
+    if (!ok) {
+      throw new Error("ERR_WALLET_SIGNATURE_INVALID: Ed25519 signature verification failed.");
+    }
+    return { verified: true, accountId: params.accountId, publicKey: pkTrimmed };
+  }
+
+  public async verifyNep413SignatureAsync(params: {
+    challengeId: string;
+    accountId: string;
+    signature: string;
+    publicKey: string;
+    callbackUrl?: string;
+  }): Promise<{ verified: true; accountId: string; publicKey: string }> {
+    const rowMode = (this.repo as unknown as { adapter?: { rowMode?: string } })?.adapter?.rowMode;
+    if (this.repo?.backend === "supabase" && (rowMode === "dual" || rowMode === "row")) {
+      // Ensure any pending challenge insert is flushed before atomic RPC consumption
+      await this.repo.flushPending();
+      const consumed = await this.repo.consumeWalletChallengeAtomic(params.challengeId, Date.now());
+      if (!consumed) {
+        const local = this.challenges.get(params.challengeId);
+        if (local?.consumed) {
+          throw new Error("ERR_CHALLENGE_REPLAYED: Wallet auth challenge has already been used.");
+        }
+        throw new Error(
+          "ERR_CHALLENGE_NOT_FOUND: Unknown, expired, or already-consumed wallet auth challenge."
+        );
+      }
+      if (consumed.account_id !== params.accountId) {
+        throw new Error(
+          `ERR_ACCOUNT_IMPERSONATION_BLOCKED: Challenge belongs to ${consumed.account_id}, not ${params.accountId}.`
+        );
+      }
+      const local = this.challenges.get(params.challengeId);
+      if (local) local.consumed = true;
+      return this.verifySignatureAgainstChallenge(
+        {
+          accountId: consumed.account_id,
+          message: consumed.message,
+          nonce: Buffer.from(consumed.nonce_base64, "base64"),
+          recipient: consumed.recipient,
+        },
+        params
+      );
+    }
+    return this.verifyNep413Signature(params);
+  }
+
+  public verifyNep413Signature(params: {
+    challengeId: string;
+    accountId: string;
+    signature: string;
+    publicKey: string;
+    callbackUrl?: string;
+  }): { verified: true; accountId: string; publicKey: string } {
+    const ch = this.challenges.get(params.challengeId);
+    if (!ch) {
+      throw new Error("ERR_CHALLENGE_NOT_FOUND: Unknown or expired wallet auth challenge.");
+    }
+    if (ch.consumed) {
+      throw new Error("ERR_CHALLENGE_REPLAYED: Wallet auth challenge has already been used.");
+    }
+    if (Date.now() > ch.expiresAtMs) {
+      ch.consumed = true;
+      this.persistChallenges();
+      throw new Error("ERR_CHALLENGE_EXPIRED: Wallet auth challenge expired. Request a new challenge.");
+    }
+    if (ch.accountId !== params.accountId) {
+      throw new Error(
+        `ERR_ACCOUNT_IMPERSONATION_BLOCKED: Challenge belongs to ${ch.accountId}, not ${params.accountId}.`
+      );
+    }
+    // Single-use: consume immediately to prevent replay or brute-force reuse.
+    ch.consumed = true;
+    this.persistChallenges();
+    return this.verifySignatureAgainstChallenge(ch, params);
   }
 
   public issueToken(session: VerifiedWalletSession): string {
@@ -190,6 +497,7 @@ export function verifyMainnetWalletSession(params: {
   networkId: string;
   walletType: string;
   privateKey?: unknown;
+  isProductionMode?: boolean;
 }): VerifiedWalletSession {
   if (params.privateKey !== undefined && params.privateKey !== null && params.privateKey !== "") {
     throw new Error(
@@ -205,6 +513,11 @@ export function verifyMainnetWalletSession(params: {
   if (!SUPPORTED_WALLETS.has(walletType)) {
     throw new Error(
       `ERR_UNSUPPORTED_WALLET: "${params.walletType}" is not supported. Use Meteor Wallet, MyNearWallet, or a NEAR Wallet Selector provider.`
+    );
+  }
+  if (params.isProductionMode && walletType === "mock-wallet") {
+    throw new Error(
+      "ERR_MOCK_WALLET_FORBIDDEN_IN_PRODUCTION: mock-wallet cannot be used in production mode."
     );
   }
   const accountId = assertValidNearAccountId(params.accountId, "accountId");
@@ -353,12 +666,17 @@ export class MainnetEscrowTracker {
 
   constructor(repo?: SnowMoonRepository) {
     this.repo = repo;
-    if (repo) {
-      for (const rec of repo.getCollection<MainnetEscrowJobRecord>("escrowJobs")) {
-        this.records.set(rec.intentId, rec);
-        if (rec.sourceTxHash) {
-          this.txToIntent.set(rec.sourceTxHash, rec.intentId);
-        }
+    this.reloadFromRepo();
+  }
+
+  public reloadFromRepo(): void {
+    if (!this.repo) return;
+    this.records.clear();
+    this.txToIntent.clear();
+    for (const rec of this.repo.getCollection<MainnetEscrowJobRecord>("escrowJobs")) {
+      this.records.set(rec.intentId, rec);
+      if (rec.sourceTxHash) {
+        this.txToIntent.set(rec.sourceTxHash, rec.intentId);
       }
     }
   }

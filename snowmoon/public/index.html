@@ -4,6 +4,10 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>SnowMoon — Verifiable AI Workforce Ledger on NEAR</title>
+  <link rel="stylesheet" href="/wallet-selector.css?v=8.9.14" />
+  <link rel="stylesheet" href="/intents-widget.css" />
+  <script src="/wallet-selector.js?v=8.9.14" defer></script>
+  <script src="/intents-widget.js" defer></script>
   <script>
     (function () {
       try {
@@ -82,18 +86,20 @@
       --on-accent: #ffffff;
     }
 
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { height: 100%; }
-    body {
-      background: var(--bg);
-      color: var(--text);
-      font-family: var(--sans);
-      font-size: 14px;
-      line-height: 1.45;
-      -webkit-font-smoothing: antialiased;
+    @layer base {
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      html, body { height: 100%; }
+      body {
+        background: var(--bg);
+        color: var(--text);
+        font-family: var(--sans);
+        font-size: 14px;
+        line-height: 1.45;
+        -webkit-font-smoothing: antialiased;
+      }
+      a { color: var(--accent); text-decoration: none; }
+      a:hover { text-decoration: underline; text-underline-offset: 3px; }
     }
-    a { color: var(--accent); text-decoration: none; }
-    a:hover { text-decoration: underline; text-underline-offset: 3px; }
     .num, .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
     .mono { font-size: 12px; }
 
@@ -199,7 +205,7 @@
     }
 
     /* Left Sidebar (airy curved pill list like world.xyz) */
-    .sidebar {
+    aside.sidebar {
       background: var(--bg);
       padding: 24px 16px 24px 24px;
       display: flex;
@@ -209,7 +215,7 @@
       top: 65px;
       height: calc(100vh - 65px);
     }
-    .sidebar nav {
+    aside.sidebar nav {
       display: flex;
       flex-direction: column;
       gap: 6px;
@@ -579,14 +585,14 @@
       .search-pill { max-width: 100%; order: 3; flex-basis: 100%; }
       .subbar { padding: 8px 16px 10px; }
       .app { grid-template-columns: 1fr; }
-      .sidebar {
+      aside.sidebar {
         position: static;
         height: auto;
         border-right: none;
         border-bottom: 1px solid var(--border);
         padding: 12px 16px;
       }
-      .sidebar nav { flex-direction: row; overflow-x: auto; gap: 6px; }
+      aside.sidebar nav { flex-direction: row; overflow-x: auto; gap: 6px; }
       .nav-link { width: auto; white-space: nowrap; }
       .sidebar-foot { display: none; }
       .main-wrap { padding: 18px 16px 40px; }
@@ -612,7 +618,8 @@
         <span class="badge" id="hdr-mode-badge">Mode: loading...</span>
         <span class="badge" id="hdr-wallet-badge">Wallet: Read-only</span>
         <button class="btn btn-sm" onclick="refreshAll()">Refresh</button>
-        <button class="btn btn-primary btn-sm" onclick="switchView('settings')">Wallet / Auth</button>
+        <button class="btn btn-primary btn-sm" id="hdr-connect-btn" onclick="openWalletModal()">Connect Wallet</button>
+        <button class="btn btn-sm" id="hdr-disconnect-btn" style="display:none;" onclick="disconnectWalletSession()">Disconnect</button>
         <button type="button" class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle colour theme" title="Toggle light/dark theme">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path stroke-linecap="round" d="M12 2.6v2.4M12 19v2.4M2.6 12h2.4M19 12h2.4M5.3 5.3l1.7 1.7M17 17l1.7 1.7M18.7 5.3L17 7M7 17l-1.7 1.7"/></svg>
         </button>
@@ -635,6 +642,13 @@
             <span>Jobs</span>
           </span>
           <span class="nav-count" id="nav-jobs-count">0</span>
+        </button>
+        <button class="nav-link" data-view="intents" onclick="switchView('intents')">
+          <span class="nav-left">
+            <svg class="nav-ico" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M7 7h11l-3-3M17 17H6l3 3"/></svg>
+            <span>Intents Funding</span>
+          </span>
+          <span class="nav-count" id="nav-intents-count">0</span>
         </button>
         <button class="nav-link" data-view="workforce" onclick="switchView('workforce')">
           <span class="nav-left">
@@ -688,6 +702,7 @@
         </div>
       </div>
 
+      <div id="restricted-beta-banner" class="banner-note" style="display:none; border-color: rgba(245, 158, 11, 0.45); background: rgba(245, 158, 11, 0.12); color: #fde68a; margin-bottom: 12px;"></div>
       <div id="global-status-banner" class="banner-note" style="display:none;"></div>
 
       <!-- 1. OVERVIEW -->
@@ -772,58 +787,76 @@
       <section id="view-jobs" class="view-section">
         <div class="grid-2">
           <div class="card">
-            <div class="card-head">
-              <span class="card-title">Prepare &amp; Register Customer Job</span>
-              <span class="provenance">Unsigned tx builder + Workforce registry</span>
+            <div class="card-head" style="margin-bottom:6px;">
+              <span class="card-title">Create &amp; Fund Job</span>
             </div>
-            <div class="form-grid">
+            <p class="stat-sub" style="margin-bottom:14px;">Describe your AI task, set a USDC budget, and approve escrow in your NEAR wallet.</p>
+
+            <div class="form-group" style="margin-bottom:12px;">
+              <label for="job-prompt">Task Prompt</label>
+              <textarea id="job-prompt" rows="4" placeholder="Describe the verifiable AI task..."></textarea>
+            </div>
+
+            <div class="form-grid" style="margin-bottom:12px;">
               <div class="form-group">
-                <label for="job-customer-id">Customer NEAR Account</label>
-                <input id="job-customer-id" placeholder="e.g. alice.near" />
+                <label for="job-capability">Capability</label>
+                <select id="job-capability">
+                  <option value="analysis">Analysis</option>
+                  <option value="research">Research</option>
+                  <option value="code-review">Code Review</option>
+                  <option value="summarization">Summarization</option>
+                  <option value="data-extraction">Data Extraction</option>
+                  <option value="security-audit">Security Audit</option>
+                </select>
               </div>
               <div class="form-group">
-                <label for="job-amount-usdc">Escrow Amount (USDC)</label>
+                <label for="job-amount-usdc">Budget (USDC)</label>
                 <input id="job-amount-usdc" type="number" step="0.01" min="0.01" value="0.50" />
               </div>
-              <div class="form-group">
-                <label for="job-capability">Required Capability</label>
-                <input id="job-capability" value="analysis" />
+            </div>
+
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; padding:8px 12px; border:1px solid var(--border); border-radius:var(--radius-sm); background:var(--panel-2); margin-bottom:14px; font-size:12px;">
+              <span style="color:var(--muted);">Wallet</span>
+              <span id="job-wallet-summary" style="font-weight:600; color:var(--text);">Not connected · NEAR Mainnet</span>
+            </div>
+
+            <button id="job-review-btn" class="btn btn-primary" style="width:100%;" onclick="openJobReviewStep()">Review &amp; Fund Job</button>
+
+            <div id="job-confirm-panel" style="display:none; margin-top:12px; padding:12px; border:1px solid var(--accent); border-radius:var(--radius-sm); background:var(--panel-2);">
+              <div style="font-weight:700; font-size:13px; margin-bottom:8px;">Confirm Job &amp; Escrow</div>
+              <div id="job-confirm-details" class="stat-sub" style="display:flex; flex-direction:column; gap:5px; margin-bottom:12px;"></div>
+              <div style="display:flex; gap:8px;">
+                <button id="job-confirm-btn" class="btn btn-primary" style="flex:1;" onclick="confirmAndFundJob()">Approve in Wallet</button>
+                <button class="btn" onclick="cancelJobReviewStep()">Cancel</button>
               </div>
-              <div class="form-group">
-                <label for="job-id-input">Job ID (optional 0x + 64 hex)</label>
-                <input id="job-id-input" placeholder="Auto-generated if empty" />
-              </div>
             </div>
-            <div class="form-group" style="margin-bottom: 12px;">
-              <label for="job-prompt">Task Prompt</label>
-              <textarea id="job-prompt" rows="2" placeholder="Describe the verifiable AI task..."></textarea>
-            </div>
-            <div style="display:flex; flex-wrap:wrap; gap:8px;">
-              <button class="btn btn-primary" onclick="prepareMainnetFundTx()">Prepare Escrow Fund Tx</button>
-              <button class="btn" onclick="registerWorkforceJob()">Register Workforce Job</button>
-            </div>
-            <pre id="job-tx-preview" class="code-box" style="display:none;"></pre>
+
+            <div id="job-tx-preview" class="stat-sub" style="display:none; margin-top:12px; padding:10px 12px; border:1px solid var(--border); border-radius:var(--radius-sm); background:var(--panel-2);"></div>
           </div>
 
           <div class="card">
             <div class="card-head">
-              <span class="card-title">Submit &amp; Reconcile Escrow Tx Hash</span>
-              <span class="provenance">Requires authenticated wallet session</span>
+              <span class="card-title">On-Chain Escrow Verification</span>
+              <span class="provenance">Automatic on wallet approval · Manual fallback</span>
             </div>
-            <div class="form-grid">
-              <div class="form-group">
-                <label for="escrow-intent-id">Escrow Intent ID</label>
-                <input id="escrow-intent-id" placeholder="intent_..." />
+            <p class="stat-sub" style="margin-bottom:10px;">When you click <strong>Fund Escrow in Wallet</strong>, your connected wallet popup signs the transaction and SnowMoon verifies it on NEAR Mainnet automatically.</p>
+            <details>
+              <summary style="cursor:pointer; font-size:13px; color:var(--text-2); margin-bottom:10px;">Manual Tx Hash Fallback (if signed externally)</summary>
+              <div class="form-grid">
+                <div class="form-group">
+                  <label for="escrow-intent-id">Escrow Intent ID</label>
+                  <input id="escrow-intent-id" placeholder="intent_..." />
+                </div>
+                <div class="form-group">
+                  <label for="escrow-tx-hash">NEAR Mainnet Tx Hash</label>
+                  <input id="escrow-tx-hash" placeholder="Base58 tx hash" />
+                </div>
               </div>
-              <div class="form-group">
-                <label for="escrow-tx-hash">NEAR Mainnet Tx Hash</label>
-                <input id="escrow-tx-hash" placeholder="Base58 tx hash" />
+              <div style="display:flex; flex-wrap:wrap; gap:8px;">
+                <button class="btn" onclick="submitEscrowTx()">Submit Tx Hash</button>
+                <button class="btn" onclick="reconcileEscrowTx()">Reconcile On-Chain</button>
               </div>
-            </div>
-            <div style="display:flex; flex-wrap:wrap; gap:8px;">
-              <button class="btn" onclick="submitEscrowTx()">Submit Tx Hash</button>
-              <button class="btn" onclick="reconcileEscrowTx()">Reconcile On-Chain</button>
-            </div>
+            </details>
           </div>
         </div>
 
@@ -850,6 +883,93 @@
               </tbody>
             </table>
           </div>
+        </div>
+      </section>
+
+      <!-- 2b. NEAR INTENTS 1CLICK FUNDING -->
+      <section id="view-intents" class="view-section">
+        <div class="grid-2" style="align-items:start;">
+          <div class="card" style="padding:16px;">
+            <div class="card-head" style="margin-bottom:12px;">
+              <span class="card-title">1. Swap Any Asset &rarr; NEAR USDC</span>
+              <span class="provenance">Official NEAR Intents Widget</span>
+            </div>
+            <div id="intents-widget-root" style="min-height:420px;"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <span class="card-title">2. Fund AI Agent Escrow</span>
+              <span class="provenance">NEAR Mainnet Core · <span id="intent-verified-usdc">0.00 USDC</span> available</span>
+            </div>
+            <div id="intents-progress-strip" style="display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:8px; margin-bottom:16px;">
+              <div class="flow-step" id="ip-step-1" style="padding:8px 10px;"><span class="badge">1</span><div class="stat-sub" style="margin-top:4px;">Quote &amp; Deposit</div></div>
+              <div class="flow-step" id="ip-step-2" style="padding:8px 10px;"><span class="badge">2</span><div class="stat-sub" style="margin-top:4px;">Cross-Chain Swap</div></div>
+              <div class="flow-step" id="ip-step-3" style="padding:8px 10px;"><span class="badge">3</span><div class="stat-sub" style="margin-top:4px;">NEAR USDC Verified</div></div>
+              <div class="flow-step" id="ip-step-4" style="padding:8px 10px;"><span class="badge">4</span><div class="stat-sub" style="margin-top:4px;">Escrow Funded</div></div>
+            </div>
+            <div class="form-grid">
+              <div class="form-group">
+                <label for="intent-agent-select">Select AI Agent</label>
+                <select id="intent-agent-select"></select>
+              </div>
+              <div class="form-group">
+                <label for="intent-escrow-amount">Funding Amount (USDC)</label>
+                <input id="intent-escrow-amount" type="number" step="0.01" min="0.01" value="0.50" />
+              </div>
+              <div class="form-group" style="grid-column: 1 / -1;">
+                <label for="intent-near-account">Recipient NEAR Account</label>
+                <input id="intent-near-account" placeholder="Connect your NEAR wallet in topbar" />
+              </div>
+            </div>
+            <div style="display:flex; flex-wrap:wrap; gap:8px;">
+              <button class="btn btn-primary" onclick="fundAgentFromVerifiedUsdc()">Fund AI Agent in Wallet</button>
+              <button class="btn" onclick="refreshConnectedAccountBalance()">Refresh USDC Balance</button>
+            </div>
+            <div id="intent-action-preview" class="stat-sub" style="display:none; margin-top:12px; padding:12px; border:1px solid var(--border); border-radius:var(--radius-sm); background:var(--panel-2);"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <details>
+            <summary style="cursor:pointer; font-weight:600; font-size:14px;">Activity &amp; Manual Recovery</summary>
+            <div style="margin-top:14px;">
+              <div class="form-grid" style="margin-bottom:10px;">
+                <div class="form-group">
+                  <label for="intent-deposit-addr">1Click Deposit Address (Fallback)</label>
+                  <input id="intent-deposit-addr" placeholder="Deposit address" />
+                </div>
+                <div class="form-group">
+                  <label for="intent-source-tx">Source Deposit Tx Hash (Fallback)</label>
+                  <input id="intent-source-tx" placeholder="Tx hash from source wallet" />
+                </div>
+              </div>
+              <div style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:14px;">
+                <button class="btn btn-sm" onclick="pollIntentStatus()">Check 1Click Status</button>
+                <button class="btn btn-sm" onclick="submitIntentDepositTx()">Submit Source Tx</button>
+                <button class="btn btn-sm btn-pos" onclick="verifyIntentDestination()">Verify NEAR USDC</button>
+                <button class="btn btn-sm btn-primary" onclick="prepareEscrowFromIntent()">Escrow From Intent</button>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Deposit Address</th>
+                      <th>Source &rarr; NEAR USDC</th>
+                      <th>Expected Out</th>
+                      <th>1Click Status</th>
+                      <th>Stage</th>
+                      <th>Expires</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="intents-tbody">
+                    <tr><td colspan="7" class="empty-row">No intents tracked yet.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </details>
         </div>
       </section>
 
@@ -1003,13 +1123,13 @@
 
           <div class="card">
             <div class="card-head">
-              <span class="card-title">Prepare LP Deposit / Withdraw Tx</span>
-              <span class="provenance">Unsigned wallet transaction builder</span>
+              <span class="card-title">FloatPool Liquidity (USDC)</span>
+              <span class="provenance">Direct wallet approval on NEAR Mainnet</span>
             </div>
             <div class="form-grid">
               <div class="form-group">
                 <label for="lp-account-id">LP Account</label>
-                <input id="lp-account-id" placeholder="lp.near" />
+                <input id="lp-account-id" placeholder="Connect wallet or enter account" />
               </div>
               <div class="form-group">
                 <label for="lp-amount-usdc">Amount (USDC)</label>
@@ -1017,10 +1137,28 @@
               </div>
             </div>
             <div style="display:flex; gap:8px; flex-wrap:wrap;">
-              <button class="btn btn-primary" onclick="prepareLpTx('deposit')">Prepare LP Deposit Tx</button>
-              <button class="btn" onclick="prepareLpTx('withdraw')">Prepare LP Withdraw Tx</button>
+              <button class="btn btn-primary" onclick="prepareLpTx('deposit')">Deposit USDC in Wallet</button>
+              <button class="btn" onclick="prepareLpTx('withdraw')">Withdraw USDC in Wallet</button>
             </div>
-            <pre id="lp-tx-preview" class="code-box" style="display:none;"></pre>
+            <div id="lp-tx-preview" class="stat-sub" style="display:none; margin-top:12px; padding:10px 12px; border:1px solid var(--border); border-radius:var(--radius-sm); background:var(--panel-2);"></div>
+          </div>
+        </div>
+
+        <div class="card" id="deliverable-review-card" style="display:none; margin-bottom:16px;">
+          <div class="card-head">
+            <span class="card-title">Customer Deliverable Review &amp; Settlement-Gated Download</span>
+            <span class="provenance" id="deliv-status-badge">LOCKED</span>
+          </div>
+          <div id="deliv-meta" class="stat-sub" style="margin-bottom:10px;"></div>
+          <pre id="deliv-preview-box" style="white-space:pre-wrap; padding:12px; border:1px solid var(--border); border-radius:var(--radius-sm); background:var(--panel-2); font-size:12px; max-height:220px; overflow:auto; margin-bottom:12px;"></pre>
+          <div class="field" style="margin-bottom:10px;">
+            <label for="deliv-reject-reason">Rejection Reason (required if rejecting)</label>
+            <input id="deliv-reject-reason" type="text" placeholder="Describe why the deliverable does not meet requirements..." />
+          </div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <button class="btn btn-pos" id="deliv-accept-btn">Accept &amp; Settle in Wallet</button>
+            <button class="btn btn-neg" id="deliv-reject-btn">Reject &amp; Prepare Refund</button>
+            <button class="btn btn-primary" id="deliv-download-btn" disabled>Download Full Deliverable</button>
           </div>
         </div>
 
@@ -1107,9 +1245,12 @@
               </div>
             </div>
             <div style="display:flex; flex-wrap:wrap; gap:8px;">
-              <button class="btn btn-primary" onclick="connectReadOnlyWallet()">Query Account &amp; Prepare Challenge</button>
-              <button class="btn" onclick="disconnectWalletSession()">Disconnect Session</button>
+              <button class="btn btn-primary" onclick="openWalletModal()">Connect NEAR Wallet (Selector)</button>
+              <button class="btn" onclick="authenticateConnectedWallet()">Sign NEP-413 Session</button>
+              <button class="btn" onclick="openWalletModal()">Switch Account</button>
+              <button class="btn" onclick="disconnectWalletSession()">Disconnect</button>
             </div>
+            <p class="stat-sub" style="margin-top:10px;">Uses official NEAR Wallet Selector (MyNearWallet, Meteor, HERE) and cryptographic NEP-413 challenge signing. Private keys are never requested.</p>
             <pre id="auth-account-info" class="code-box" style="display:none;"></pre>
           </div>
 
@@ -1131,6 +1272,7 @@
     const VIEW_META = {
       overview: { title: "Overview", sub: "Live NEAR Core Vault, FloatPool, Workforce, and OutLayer TEE ledger." },
       jobs: { title: "Jobs", sub: "Escrow funding preparation, workforce assignment, delivery verification, and settlement." },
+      intents: { title: "Intents Funding", sub: "Convert supported cross-chain assets into NEAR USDC via 1Click and fund Core escrow." },
       workforce: { title: "Workforce", sub: "Registered workers, availability, and OutLayer TEE execution records." },
       approvals: { title: "Approvals", sub: "Policy-gated spending approval requests and idempotent decisions." },
       float: { title: "Float", sub: "FloatPool liquidity, advances, reserve, limits, and settlement ledger." },
@@ -1138,11 +1280,12 @@
       settings: { title: "Settings", sub: "NEAR network identity, wallet session, Supabase, and OutLayer readiness." },
     };
 
-    let walletSessionToken = "";
-    let connectedAccountId = "";
+    let walletSessionToken = sessionStorage.getItem("snowmoon_wallet_token") || "";
+    let connectedAccountId = sessionStorage.getItem("snowmoon_wallet_account") || "";
     let latestState = null;
     let latestMainnet = null;
     let latestHealth = null;
+    let intentTokensCache = [];
 
     function toggleTheme() {
       const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
@@ -1206,7 +1349,19 @@
       const resp = await fetch(url, Object.assign({}, opts, { headers }));
       const json = await resp.json().catch(() => ({ ok: false, error: `HTTP ${resp.status}` }));
       if (!resp.ok || json.ok === false) {
-        throw new Error(json.error || `Request failed (${resp.status})`);
+        const errMsg = json.error || `Request failed (${resp.status})`;
+        if (
+          resp.status === 401 ||
+          errMsg.includes("ERR_WALLET_SESSION_INVALID") ||
+          errMsg.includes("ERR_WALLET_AUTH_REQUIRED")
+        ) {
+          walletSessionToken = "";
+          sessionStorage.removeItem("snowmoon_wallet_session");
+          updateWalletButton();
+          if (typeof openWalletModal === "function") openWalletModal();
+          throw new Error("Wallet session expired. Please reconnect & verify your wallet.");
+        }
+        throw new Error(errMsg);
       }
       return json;
     }
@@ -1240,7 +1395,7 @@
     }
 
     function renderAll() {
-      const cfg = latestState?.config || {};
+      const cfg = latestState?.environment || latestState?.config || {};
       const net = latestHealth?.network || cfg.network || "unknown";
       const coreId = cfg.mainnetCoreContractId || "core.cryptozax.near";
       const auditId = cfg.mainnetAuditContractId || "audit.cryptozax.near";
@@ -1252,12 +1407,28 @@
 
       document.getElementById("hdr-mode-badge").textContent =
         `DB: ${latestHealth?.database?.backend || "?"} · AI: ${latestHealth?.ai?.mode || "?"} · TEE: ${latestHealth?.outlayer?.mode || "?"}`;
-      document.getElementById("hdr-wallet-badge").textContent =
-        connectedAccountId ? `Wallet: ${connectedAccountId}` : "Wallet: Read-only";
+      const hdrConnectBtn = document.getElementById("hdr-connect-btn");
+      const hdrDisconnectBtn = document.getElementById("hdr-disconnect-btn");
+      if (hdrConnectBtn) hdrConnectBtn.style.display = (connectedAccountId && walletSessionToken) ? "none" : "inline-flex";
+      if (hdrDisconnectBtn) hdrDisconnectBtn.style.display = connectedAccountId ? "inline-flex" : "none";
 
-      const acc = latestMainnet?.coreAccounting || latestState?.nearMainnet?.coreAccounting || null;
-      const limits = latestMainnet?.coreLimits || latestState?.nearMainnet?.coreLimits || null;
-      const contracts = latestMainnet?.contracts || latestState?.nearMainnet?.contracts || null;
+      const shortAcc = connectedAccountId
+        ? (connectedAccountId.length > 24 ? `${connectedAccountId.slice(0, 10)}...${connectedAccountId.slice(-8)}` : connectedAccountId)
+        : "";
+      const balSuffix = connectedAccountBalance
+        ? ` · ${connectedAccountBalance.nearFormatted} NEAR · ${connectedAccountBalance.usdcFormatted} USDC`
+        : "";
+      document.getElementById("hdr-wallet-badge").textContent =
+        connectedAccountId
+          ? (walletSessionToken ? `Wallet: ${shortAcc}${balSuffix}` : `Wallet: ${shortAcc} (Read-only)`)
+          : "Wallet: Read-only";
+
+      const mn = latestMainnet?.nearMainnet || latestState?.nearMainnet || null;
+      const contracts = mn?.contracts || null;
+      const coreInfo = contracts?.core || null;
+      const auditInfo = contracts?.audit || null;
+      const acc = coreInfo?.viewQueryResult || null;
+      const rpcFailed = Boolean(mn && mn.rpcReachable === false);
 
       const workforceJobs = Array.isArray(latestState?.workforceJobs) ? latestState.workforceJobs : [];
       const workers = Array.isArray(latestState?.workers) ? latestState.workers : [];
@@ -1266,16 +1437,40 @@
       const settlements = Array.isArray(latestState?.settlements) ? latestState.settlements : [];
       const outlayerCalls = Array.isArray(latestState?.outlayerRequests) ? latestState.outlayerRequests : [];
       const escrows = Array.isArray(latestState?.escrows) ? latestState.escrows : [];
+      const intents = Array.isArray(latestState?.intents) ? latestState.intents : [];
 
       // Nav counts
       document.getElementById("nav-jobs-count").textContent = String(workforceJobs.length + escrows.length);
+      document.getElementById("nav-intents-count").textContent = String(intents.length);
       document.getElementById("nav-workers-count").textContent = String(workers.length);
       const pendingApprovals = approvals.filter((a) => a.status === "PENDING");
       document.getElementById("nav-approvals-count").textContent = String(pendingApprovals.length);
 
+      const verifiedUsdcEl = document.getElementById("intent-verified-usdc");
+      if (verifiedUsdcEl) {
+        verifiedUsdcEl.textContent = connectedAccountBalance
+          ? `${connectedAccountBalance.usdcFormatted} USDC`
+          : (connectedAccountId ? "Loading USDC..." : "Connect NEAR wallet");
+      }
+      const agentSel = document.getElementById("intent-agent-select");
+      if (agentSel) {
+        const prevVal = agentSel.value;
+        const opts = workers.length > 0
+          ? workers.map((w) => `<option value="${esc(w.accountId)}">${esc(w.displayName || w.workerId)} (${esc(shortHex(w.accountId))})</option>`).join("")
+          : `<option value="88b6a5aa5a966aec6f9b56229f78458beca261b1f8fa5553109072f810222169">SnowMoon OutLayer Worker (88b6a5...2169)</option>`;
+        agentSel.innerHTML = opts;
+        if (prevVal && Array.from(agentSel.options).some((o) => o.value === prevVal)) {
+          agentSel.value = prevVal;
+        }
+      }
+
       // 1. Overview
-      document.getElementById("ov-escrow").textContent = acc ? fmtAtomicUsdc(acc.escrowed_usdc) : "Unavailable";
-      document.getElementById("ov-escrow-sub").textContent = `Source: ${coreId} RPC`;
+      document.getElementById("ov-escrow").textContent = acc
+        ? fmtAtomicUsdc(acc.escrowed_usdc)
+        : (rpcFailed ? "RPC Error" : "Unavailable");
+      document.getElementById("ov-escrow-sub").textContent = acc
+        ? `Source: ${coreId} (Block #${mn?.latestBlockHeight || "?"})`
+        : (rpcFailed ? `RPC unreachable: ${mn?.rpcUrl || coreId}` : `Source: ${coreId} RPC`);
 
       const activeJobs = workforceJobs.filter((j) => ["ASSIGNED", "ACCEPTED", "EXECUTING", "DELIVERED"].includes(j.state)).length;
       const doneJobs = workforceJobs.filter((j) => ["VERIFIED", "SETTLED"].includes(j.state)).length;
@@ -1288,8 +1483,10 @@
         document.getElementById("ov-float-assets").textContent = `${fmtAtomicUsdc(acc.total_assets)} / ${fmtAtomicUsdc(acc.total_outstanding)}`;
         document.getElementById("ov-float-sub").textContent = `Utilisation: ${util} | Reserve: ${fmtAtomicUsdc(acc.reserve)} | Vault paused: ${acc.vault_paused}`;
       } else {
-        document.getElementById("ov-float-assets").textContent = "Unavailable";
-        document.getElementById("ov-float-sub").textContent = "Mainnet RPC accounting unavailable";
+        document.getElementById("ov-float-assets").textContent = rpcFailed ? "RPC Error" : "Unavailable";
+        document.getElementById("ov-float-sub").textContent = rpcFailed
+          ? "Mainnet RPC unreachable"
+          : "Core accounting view unavailable";
       }
 
       document.getElementById("ov-approvals").textContent = String(pendingApprovals.length);
@@ -1337,7 +1534,8 @@
                 ${!j.assignedWorkerId ? `<button class="btn btn-sm" onclick="assignJob('${esc(j.jobId)}')">Assign</button>` : ""}
                 ${j.state === "ASSIGNED" || j.state === "ACCEPTED" ? `<button class="btn btn-sm btn-primary" onclick="executeJob('${esc(j.jobId)}')">Execute</button>` : ""}
                 ${j.state === "DELIVERED" ? `<button class="btn btn-sm btn-pos" onclick="verifyJob('${esc(j.jobId)}', true)">Accept</button> <button class="btn btn-sm btn-neg" onclick="verifyJob('${esc(j.jobId)}', false)">Reject</button>` : ""}
-                ${j.state === "VERIFIED" ? `<button class="btn btn-sm" onclick="prepareSettlement('${esc(j.jobId)}')">Prepare Settle</button>` : ""}
+                ${j.state === "VERIFIED" ? `<button class="btn btn-sm" onclick="prepareSettlement('${esc(j.jobId)}')">Settle in Wallet</button>` : ""}
+                ${(j.state === "DELIVERED" || j.state === "VERIFIED" || j.state === "SETTLED") ? `<button class="btn btn-sm" onclick="openDeliverableReview('${esc(j.jobId)}')">Review / Download</button>` : ""}
               </td>
             </tr>`;
         }).join("");
@@ -1407,9 +1605,9 @@
         document.getElementById("fl-reserve").textContent = "Unavailable";
       }
 
-      document.getElementById("fl-limits-box").innerHTML = limits
-        ? `Contract: <strong>${esc(limits.contractId)}</strong> | Admin: <strong>${esc(limits.admin)}</strong><br/>Max Job Payment: <strong>$${limits.maxJobPaymentUsdc} USDC</strong> | Max Total Exposure: <strong>$${limits.maxTotalExposureUsdc} USDC</strong> | Max Advance: <strong>$${limits.maxAdvanceUsdc} USDC</strong><br/>Deposit Allowlist: <strong>${limits.depositAllowlistEnabled}</strong> | Vault Paused: <strong>${limits.vaultPaused}</strong> | Pool Paused: <strong>${limits.poolPaused}</strong>`
-        : "FloatPool limits unavailable.";
+      document.getElementById("fl-limits-box").innerHTML = coreInfo
+        ? `Contract: <strong>${esc(coreInfo.contractId)}</strong> | Status: <strong>${esc(coreInfo.deploymentStatus || "Unknown")}</strong> | Admin: <strong>${esc(coreInfo.admin || "-")}</strong><br/>Job Storage Deposit: <strong>${coreInfo.jobStorageDepositYocto ? (Number(coreInfo.jobStorageDepositYocto) / 1e24).toFixed(4) + " NEAR" : "-"}</strong> | Next Job Seq: <strong>${acc?.next_job_seq ?? "-"}</strong><br/>Vault Paused: <strong>${acc?.vault_paused ?? "Unknown"}</strong> | Pool Paused: <strong>${acc?.pool_paused ?? "Unknown"}</strong> | RPC Reachable: <strong>${Boolean(mn?.rpcReachable)}</strong>`
+        : "FloatPool contract status unavailable.";
 
       const sTbody = document.getElementById("settlements-tbody");
       sTbody.innerHTML = settlements.length === 0
@@ -1425,11 +1623,26 @@
           </tr>`).join("");
 
       // 6. Audit (Safe guarded access to mainnetAuditContractId)
-      const coreInfo = contracts?.core;
-      const auditInfo = contracts?.audit;
       document.getElementById("audit-contract-summary").innerHTML =
         `Core: <strong>${esc(coreInfo?.contractId || coreId)}</strong> · Status: <strong>${esc(coreInfo?.deploymentStatus || "Unknown")}</strong> · CodeHash: <span class="mono">${esc(coreInfo?.codeHash || "Unavailable")}</span><br/>` +
-        `AuditAnchor: <strong>${esc(auditInfo?.contractId || auditId)}</strong> · Initialized: <strong>${auditInfo?.initialized ?? "Unknown"}</strong> · CodeHash: <span class="mono">${esc(auditInfo?.codeHash || "Unavailable")}</span>`;
+        `AuditAnchor: <strong>${esc(auditInfo?.contractId || auditId)}</strong> · Status: <strong>${esc(auditInfo?.deploymentStatus || "Unknown")}</strong> · Core: <strong>${esc(auditInfo?.coreContract || "-")}</strong> · CodeHash: <span class="mono">${esc(auditInfo?.codeHash || "Unavailable")}</span>`;
+
+      // Intents table
+      const iTbody = document.getElementById("intents-tbody");
+      if (iTbody) {
+        iTbody.innerHTML = intents.length === 0
+          ? `<tr><td colspan="7" class="empty-row">No intents tracked yet.</td></tr>`
+          : intents.map((it) => `
+            <tr>
+              <td class="mono">${esc(shortHex(it.depositAddress))}</td>
+              <td class="mono">${esc(it.sourceChain)} (${esc(shortHex(it.originAsset))})</td>
+              <td class="num">${fmtAtomicUsdc(it.expectedAmountOutAtomic)}</td>
+              <td><span class="badge ${it.status === "SUCCESS" ? "badge-pos" : it.status === "FAILED" || it.status === "REFUNDED" ? "badge-neg" : "badge-warn"}">${esc(it.status)}</span></td>
+              <td><span class="badge">${esc(it.lifecycleStage)}</span></td>
+              <td class="mono">${esc((it.quoteExpiresAt || "").slice(0, 19).replace("T", " "))}</td>
+              <td><button class="btn btn-sm" onclick="selectIntentDeposit('${esc(it.depositAddress)}')">Select</button></td>
+            </tr>`).join("");
+      }
 
       const audTbody = document.getElementById("audit-submissions-tbody");
       audTbody.innerHTML = verifications.length === 0
@@ -1443,9 +1656,21 @@
               <td><span class="badge ${v.verificationStatus === "VERIFIED" ? "badge-pos" : "badge-warn"}">${esc(v.verificationStatus)}</span></td>
               <td><span class="badge ${st === "ANCHORED" ? "badge-pos" : st === "FAILED" ? "badge-neg" : "badge-warn"}">${esc(st)}</span></td>
               <td class="mono">${v.auditTxHash ? `<a href="https://nearblocks.io/txns/${esc(v.auditTxHash)}" target="_blank" rel="noreferrer">${esc(shortHex(v.auditTxHash))}</a>` : "—"}</td>
-              <td>${st === "NONE" || st === "FAILED" ? `<button class="btn btn-sm" onclick="prepareAuditAnchor('${esc(v.jobId)}')">Prepare Anchor Tx</button>` : st}</td>
+              <td>${st === "NONE" || st === "FAILED" ? `<button class="btn btn-sm" onclick="prepareAuditAnchor('${esc(v.jobId)}')">Anchor in Wallet</button>` : st}</td>
             </tr>`;
         }).join("");
+
+      const betaBanner = document.getElementById("restricted-beta-banner");
+      if (betaBanner) {
+        const betaOn = Boolean(latestState?.environment?.restrictedBetaMode || latestHealth?.restrictedBetaMode);
+        if (betaOn) {
+          betaBanner.style.display = "block";
+          betaBanner.innerHTML =
+            "<strong>Restricted Mainnet Beta:</strong> Wallet connection and read-only Mainnet ledger inspection are active. Customer escrow funding, FloatPool advances, LP deposits/withdrawals, and automated real-money settlement are disabled until external smart-contract audit and operator verification are complete.";
+        } else {
+          betaBanner.style.display = "none";
+        }
+      }
 
       // 7. Settings (presence checks only, zero secrets)
       const db = latestHealth?.database;
@@ -1459,39 +1684,125 @@
         `Requests: <strong>${latestHealth?.metrics?.requestsTotal ?? 0}</strong> · 4xx: <strong>${latestHealth?.metrics?.errors4xx ?? 0}</strong> · 5xx: <strong>${latestHealth?.metrics?.errors5xx ?? 0}</strong>`;
     }
 
-    async function prepareMainnetFundTx() {
+    let jobFundingInFlight = false;
+
+    function updateJobWalletSummary() {
+      const el = document.getElementById("job-wallet-summary");
+      if (!el) return;
+      el.textContent = connectedAccountId
+        ? `${shortHex(connectedAccountId)} · NEAR Mainnet`
+        : "Not connected · NEAR Mainnet";
+    }
+
+    function openJobReviewStep() {
+      if (!connectedAccountId) {
+        openWalletModal();
+        return;
+      }
+      const prompt = document.getElementById("job-prompt").value.trim();
+      const capability = document.getElementById("job-capability").value.trim() || "analysis";
+      const usdc = Number(document.getElementById("job-amount-usdc").value || "0");
+      if (!prompt) {
+        showToast("Enter a task prompt first.");
+        return;
+      }
+      if (!Number.isFinite(usdc) || usdc <= 0) {
+        showToast("Enter a valid USDC budget.");
+        return;
+      }
+      const details = document.getElementById("job-confirm-details");
+      details.innerHTML =
+        `<div><strong>Task:</strong> ${esc(prompt.length > 120 ? prompt.slice(0, 120) + "..." : prompt)}</div>` +
+        `<div><strong>Capability:</strong> ${esc(capability)} · <strong>Budget:</strong> ${esc(usdc.toFixed(2))} USDC</div>` +
+        `<div><strong>Wallet:</strong> ${esc(shortHex(connectedAccountId))} (NEAR Mainnet)</div>` +
+        `<div><strong>Fees:</strong> NEAR network gas (~0.001 NEAR) · 0% SnowMoon fee</div>`;
+      document.getElementById("job-confirm-panel").style.display = "block";
+    }
+
+    function cancelJobReviewStep() {
+      document.getElementById("job-confirm-panel").style.display = "none";
+    }
+
+    async function confirmAndFundJob() {
+      if (jobFundingInFlight) return;
+      const box = document.getElementById("job-tx-preview");
+      const confirmBtn = document.getElementById("job-confirm-btn");
       try {
-        const customerAccountId = document.getElementById("job-customer-id").value.trim() || connectedAccountId;
+        if (!connectedAccountId) {
+          openWalletModal();
+          return;
+        }
+        const customerAccountId = connectedAccountId;
+        const prompt = document.getElementById("job-prompt").value.trim();
+        const capability = document.getElementById("job-capability").value.trim() || "analysis";
         const usdc = Number(document.getElementById("job-amount-usdc").value || "0");
         const amountAtomic = String(Math.round(usdc * 1_000_000));
+
+        jobFundingInFlight = true;
+        confirmBtn.disabled = true;
+        confirmBtn.textContent = "Waiting for Wallet...";
+        box.style.display = "block";
+        box.innerHTML = "Preparing escrow transaction for NEAR wallet approval...";
+
         const res = await apiFetch("/api/near/escrow/prepare-fund", {
           method: "POST",
           body: JSON.stringify({ customerAccountId, customerPaymentUsdcAtomic: amountAtomic }),
         });
-        const box = document.getElementById("job-tx-preview");
-        box.style.display = "block";
-        box.textContent = JSON.stringify(res, null, 2);
-        showToast("Prepared unsigned Mainnet escrow transaction (awaiting wallet signature).");
-        await refreshAll();
-      } catch (e) { showToast(e.message); }
-    }
+        const intentId = res.intent?.intentId || "";
+        const txs = res.preparedPayloads?.transactions || res.transactions || [];
+        if (txs.length === 0 || !window.SnowMoonWalletSelector) {
+          throw new Error("Wallet selector is not ready to sign this transaction.");
+        }
 
-    async function registerWorkforceJob() {
-      try {
-        const customerAccountId = document.getElementById("job-customer-id").value.trim() || connectedAccountId;
-        const usdc = Number(document.getElementById("job-amount-usdc").value || "0");
-        const amountAtomic = String(Math.round(usdc * 1_000_000));
-        const capability = document.getElementById("job-capability").value.trim() || "analysis";
-        const prompt = document.getElementById("job-prompt").value.trim();
-        const rawJobId = document.getElementById("job-id-input").value.trim();
-        const jobId = rawJobId || `0x${Array.from(crypto.getRandomValues(new Uint8Array(32))).map((b) => b.toString(16).padStart(2, "0")).join("")}`;
-        await apiFetch("/api/workforce/jobs/register", {
-          method: "POST",
-          body: JSON.stringify({ jobId, customerAccountId, amountAtomic, requiredCapabilities: [capability], prompt, deadlineSec: Math.floor(Date.now() / 1000) + 3600 }),
+        const signed = await signPreparedTransactionsAndReconcile(txs, async (txHash) => {
+          box.innerHTML = "Verifying on-chain escrow on NEAR Mainnet...";
+          if (intentId) {
+            await apiFetch("/api/near/escrow/submit-tx", {
+              method: "POST",
+              body: JSON.stringify({ intentId, txHash, customerAccountId }),
+            });
+            const rec = await apiFetch("/api/near/escrow/reconcile", {
+              method: "POST",
+              body: JSON.stringify({ intentId, customerAccountId }),
+            });
+            if (rec?.intent?.status && rec.intent.status !== "FINAL_CONFIRMED" && rec.intent.status !== "SETTLED") {
+              throw new Error(`Escrow transaction is ${rec.intent.status}, not yet confirmed.`);
+            }
+          }
+          box.innerHTML = "Escrow verified! Registering workforce job...";
+          await apiFetch("/api/workforce/jobs/register", {
+            method: "POST",
+            body: JSON.stringify({
+              customerAccountId,
+              amountAtomic,
+              requiredCapabilities: [capability],
+              prompt,
+              funded: true,
+              escrowTxHash: txHash,
+              intentId,
+              deadlineSec: Math.floor(Date.now() / 1000) + 3600,
+            }),
+          });
+          document.getElementById("job-confirm-panel").style.display = "none";
+          document.getElementById("job-prompt").value = "";
+          box.innerHTML = `Job created &amp; escrow verified on NEAR Mainnet · Tx: <a href="https://nearblocks.io/txns/${esc(txHash)}" target="_blank" rel="noreferrer">${esc(shortHex(txHash))}</a>`;
         });
-        showToast("Workforce job registered.");
+
+        if (!signed) {
+          box.innerHTML = "Wallet approval was cancelled or rejected. No job was created.";
+          return;
+        }
+        showToast("Job created and escrow verified on NEAR Mainnet.");
         await refreshAll();
-      } catch (e) { showToast(e.message); }
+      } catch (e) {
+        box.style.display = "block";
+        box.innerHTML = `Error: ${esc(e.message || String(e))}`;
+        showToast(e.message || String(e));
+      } finally {
+        jobFundingInFlight = false;
+        confirmBtn.disabled = false;
+        confirmBtn.textContent = "Approve in Wallet";
+      }
     }
 
     async function submitEscrowTx() {
@@ -1559,7 +1870,30 @@
 
     async function prepareSettlement(jobId) {
       try {
-        await apiFetch("/api/settlement/prepare", { method: "POST", body: JSON.stringify({ jobId, kind: "PAYOUT_ACCEPT_DELIVERY" }) });
+        const res = await apiFetch("/api/settlement/prepare", { method: "POST", body: JSON.stringify({ jobId, kind: "PAYOUT_ACCEPT_DELIVERY" }) });
+        const settlement = res.settlement;
+        const txs = settlement?.transaction ? [settlement.transaction] : [];
+        if (txs.length > 0 && window.SnowMoonWalletSelector && connectedAccountId) {
+          const signed = await signPreparedTransactionsAndReconcile(txs, async (txHash) => {
+            await apiFetch("/api/settlement/submit-tx", {
+              method: "POST",
+              body: JSON.stringify({
+                settlementId: settlement.settlementId,
+                txHash,
+                signerAccountId: connectedAccountId,
+              }),
+            });
+            await apiFetch("/api/settlement/reconcile", {
+              method: "POST",
+              body: JSON.stringify({ settlementId: settlement.settlementId, txHash }),
+            });
+          });
+          if (signed) {
+            showToast("Settlement signed and reconciled on NEAR Mainnet.");
+            await refreshAll();
+            return;
+          }
+        }
         showToast("Prepared settlement tx (awaiting wallet signature).");
         await refreshAll();
       } catch (e) { showToast(e.message); }
@@ -1576,20 +1910,57 @@
     async function prepareLpTx(kind) {
       try {
         const accountId = document.getElementById("lp-account-id").value.trim() || connectedAccountId;
+        if (!accountId) {
+          openWalletModal();
+          return;
+        }
         const usdc = Number(document.getElementById("lp-amount-usdc").value || "0");
         const amountAtomic = String(Math.round(usdc * 1_000_000));
         const endpoint = kind === "deposit" ? "/api/near/float/prepare-deposit" : "/api/near/float/prepare-withdraw";
-        const res = await apiFetch(endpoint, { method: "POST", body: JSON.stringify({ lpAccountId: accountId, amountUsdcAtomic: amountAtomic }) });
         const box = document.getElementById("lp-tx-preview");
         box.style.display = "block";
-        box.textContent = JSON.stringify(res, null, 2);
-        showToast(`Prepared LP ${kind} tx (awaiting wallet signature).`);
+        box.innerHTML = `Preparing LP ${esc(kind)} for wallet approval...`;
+        const res = await apiFetch(endpoint, { method: "POST", body: JSON.stringify({ lpAccountId: accountId, amountUsdcAtomic: amountAtomic }) });
+        const txs = res.transactions || (res.transaction ? [res.transaction] : []);
+        if (txs.length > 0 && window.SnowMoonWalletSelector) {
+          const signed = await signPreparedTransactionsAndReconcile(txs, async (txHash) => {
+            box.innerHTML = `LP ${esc(kind)} confirmed · Tx: <a href="https://nearblocks.io/txns/${esc(txHash)}" target="_blank" rel="noreferrer">${esc(shortHex(txHash))}</a>`;
+          });
+          if (signed) {
+            showToast(`LP ${kind} signed in wallet.`);
+            await refreshAll();
+            return;
+          }
+        }
+        box.innerHTML = `Prepared LP ${esc(kind)} transaction. Connect your wallet to approve.`;
       } catch (e) { showToast(e.message); }
     }
 
     async function prepareAuditAnchor(jobId) {
       try {
-        await apiFetch("/api/verification/prepare-audit-anchor", { method: "POST", body: JSON.stringify({ jobId }) });
+        const res = await apiFetch("/api/verification/prepare-audit-anchor", { method: "POST", body: JSON.stringify({ jobId }) });
+        const tx = res.anchorPlan?.transaction;
+        if (tx && window.SnowMoonWalletSelector && connectedAccountId) {
+          const signed = await signPreparedTransactionsAndReconcile([tx], async (txHash) => {
+            await apiFetch("/api/verification/submit-audit-anchor", {
+              method: "POST",
+              body: JSON.stringify({
+                jobId,
+                txHash,
+                signerAccountId: connectedAccountId,
+              }),
+            });
+            await apiFetch("/api/verification/recover-anchors", {
+              method: "POST",
+              body: JSON.stringify({}),
+            });
+          });
+          if (signed) {
+            showToast("AuditAnchor signed and submitted on NEAR Mainnet.");
+            await refreshAll();
+            return;
+          }
+        }
         showToast("Prepared AuditAnchor tx (awaiting wallet signature).");
         await refreshAll();
       } catch (e) { showToast(e.message); }
@@ -1603,32 +1974,534 @@
       } catch (e) { showToast(e.message); }
     }
 
-    async function connectReadOnlyWallet() {
+    let connectedAccountBalance = null;
+    let connectedWalletId = sessionStorage.getItem("snowmoon_wallet_id") || "";
+    let walletSelectorReady = false;
+
+    async function refreshConnectedAccountBalance() {
+      if (!connectedAccountId) {
+        connectedAccountBalance = null;
+        return;
+      }
       try {
-        const accountId = document.getElementById("auth-account-id").value.trim();
-        if (!accountId) throw new Error("Enter a NEAR account ID.");
-        const [acct, ch] = await Promise.all([
-          apiFetch(`/api/near/account?accountId=${encodeURIComponent(accountId)}`),
-          apiFetch("/api/auth/challenge", { method: "POST", body: JSON.stringify({ accountId }) }),
-        ]);
-        connectedAccountId = accountId;
-        const box = document.getElementById("auth-account-info");
-        box.style.display = "block";
-        box.textContent = JSON.stringify({ account: acct, challenge: ch, note: "Sign challenge in wallet to obtain session token." }, null, 2);
-        renderAll();
-        showToast(`Loaded Mainnet state for ${accountId}.`);
+        const res = await apiFetch(`/api/near/account?accountId=${encodeURIComponent(connectedAccountId)}`);
+        if (res.accountState) {
+          const usdcNum = Number(res.accountState.usdcBalanceAtomic || "0") / 1_000_000;
+          connectedAccountBalance = {
+            nearFormatted: res.accountState.amountNear || "0",
+            usdcFormatted: usdcNum > 0 ? usdcNum.toFixed(4).replace(/0+$/, "").replace(/\.$/, "") : "0",
+          };
+          renderAll();
+        }
+      } catch {
+        // Non-fatal; keep existing balance badge
+      }
+    }
+
+    function applyConnectedAccount(accountId, walletId) {
+      connectedAccountId = accountId || "";
+      if (walletId) {
+        connectedWalletId = walletId;
+        sessionStorage.setItem("snowmoon_wallet_id", walletId);
+      }
+      if (connectedAccountId) {
+        sessionStorage.setItem("snowmoon_wallet_account", connectedAccountId);
+        const authInput = document.getElementById("auth-account-id");
+        if (authInput) authInput.value = connectedAccountId;
+        const jobCust = document.getElementById("job-customer-id");
+        if (jobCust && !jobCust.value) jobCust.value = connectedAccountId;
+        const intentNear = document.getElementById("intent-near-account");
+        if (intentNear && !intentNear.value) intentNear.value = connectedAccountId;
+        const lpAcct = document.getElementById("lp-account-id");
+        if (lpAcct && !lpAcct.value) lpAcct.value = connectedAccountId;
+      }
+      renderAll();
+      mountIntentsWidget();
+      updateJobWalletSummary();
+    }
+
+    async function initWalletSelector() {
+      if (walletSelectorReady || !window.SnowMoonWalletSelector) return;
+      const cfg = latestState?.environment || latestState?.config || {};
+      const networkId = (latestHealth?.network || cfg.network || "mainnet") === "testnet" ? "testnet" : "mainnet";
+      const contractId = cfg.mainnetCoreContractId || "core.cryptozax.near";
+      await window.SnowMoonWalletSelector.init({
+        networkId,
+        contractId,
+        onStateChange: async (accounts, walletId) => {
+          const active = Array.isArray(accounts) && accounts.length > 0 ? accounts[0] : null;
+          if (!active) {
+            if (connectedAccountId) {
+              walletSessionToken = "";
+              connectedAccountId = "";
+              connectedAccountBalance = null;
+              sessionStorage.removeItem("snowmoon_wallet_token");
+              sessionStorage.removeItem("snowmoon_wallet_account");
+              sessionStorage.removeItem("snowmoon_wallet_id");
+              renderAll();
+            }
+            return;
+          }
+          const changed = active.accountId !== connectedAccountId;
+          applyConnectedAccount(active.accountId, walletId || connectedWalletId);
+          await refreshConnectedAccountBalance();
+          if (changed || !walletSessionToken) {
+            await authenticateConnectedWallet(active.accountId, walletId || "wallet-selector");
+          }
+        },
+      });
+      walletSelectorReady = true;
+      const active = await window.SnowMoonWalletSelector.getActiveAccount();
+      if (active && active.accountId) {
+        applyConnectedAccount(active.accountId, active.walletId);
+        await refreshConnectedAccountBalance();
+      }
+    }
+
+    async function openWalletModal() {
+      try {
+        await initWalletSelector();
+        if (!window.SnowMoonWalletSelector) {
+          throw new Error("Wallet Selector bundle failed to load.");
+        }
+        window.SnowMoonWalletSelector.openModal();
       } catch (e) { showToast(e.message); }
     }
 
-    function disconnectWalletSession() {
-      walletSessionToken = "";
-      connectedAccountId = "";
-      document.getElementById("auth-account-info").style.display = "none";
-      renderAll();
-      showToast("Wallet session cleared.");
+    async function authenticateConnectedWallet(explicitAccountId, explicitWalletType) {
+      try {
+        await initWalletSelector();
+        const active = !explicitAccountId && window.SnowMoonWalletSelector
+          ? await window.SnowMoonWalletSelector.getActiveAccount()
+          : null;
+        const accountId = (explicitAccountId || active?.accountId || connectedAccountId || document.getElementById("auth-account-id")?.value || "").trim();
+        const walletType = explicitWalletType || active?.walletId || connectedWalletId || "wallet-selector";
+        if (!accountId) {
+          openWalletModal();
+          return;
+        }
+        const ch = await apiFetch("/api/near/wallet/challenge", {
+          method: "POST",
+          body: JSON.stringify({ accountId, walletType }),
+        });
+        const signed = await window.SnowMoonWalletSelector.signChallenge({
+          message: ch.challenge.message,
+          nonceBase64: ch.challenge.nonceBase64,
+          recipient: ch.challenge.recipient,
+          callbackUrl: window.location.origin + window.location.pathname,
+        });
+        const verified = await apiFetch("/api/near/wallet/verify", {
+          method: "POST",
+          body: JSON.stringify({
+            accountId: signed.accountId || accountId,
+            networkId: "mainnet",
+            walletType,
+            challengeId: ch.challenge.challengeId,
+            signature: signed.signature,
+            publicKey: signed.publicKey,
+          }),
+        });
+        walletSessionToken = verified.walletSessionToken || "";
+        sessionStorage.setItem("snowmoon_wallet_token", walletSessionToken);
+        applyConnectedAccount(verified.session?.accountId || accountId, walletType);
+        await refreshConnectedAccountBalance();
+        const box = document.getElementById("auth-account-info");
+        if (box) {
+          box.style.display = "block";
+          box.textContent = JSON.stringify({
+            authenticated: Boolean(walletSessionToken),
+            session: verified.session,
+            customerState: verified.customerState,
+          }, null, 2);
+        }
+        showToast(`Authenticated ${connectedAccountId} via NEP-413.`);
+      } catch (e) {
+        showToast(`Wallet verification: ${e.message}`);
+      }
     }
 
-    refreshAll();
+    async function signPreparedTransactionsAndReconcile(transactions, onSigned) {
+      if (!window.SnowMoonWalletSelector || !Array.isArray(transactions) || transactions.length === 0) {
+        return false;
+      }
+      await initWalletSelector();
+      const active = await window.SnowMoonWalletSelector.getActiveAccount();
+      if (!active || !active.accountId) {
+        showToast("Connect a NEAR wallet first to sign transactions.");
+        openWalletModal();
+        return false;
+      }
+      const normalizedTxs = transactions.map((tx) => ({
+        receiverId: tx.receiverId,
+        actions: (tx.actions || []).map((a) => ({
+          type: "FunctionCall",
+          methodName: a.methodName,
+          args: a.args || {},
+          gas: String(a.gas || "100000000000000"),
+          deposit: String(a.deposit ?? a.depositYocto ?? "0"),
+        })),
+      }));
+      const result = await window.SnowMoonWalletSelector.signAndSendTransactions(normalizedTxs);
+      const txHash = Array.isArray(result?.txHashes) && result.txHashes.length > 0
+        ? result.txHashes[result.txHashes.length - 1]
+        : "";
+      if (txHash && typeof onSigned === "function") {
+        await onSigned(txHash, result);
+      }
+      return Boolean(txHash);
+    }
+
+    async function disconnectWalletSession() {
+      try {
+        if (window.SnowMoonWalletSelector && walletSelectorReady) {
+          await window.SnowMoonWalletSelector.disconnect();
+        }
+      } catch {
+        // Ignore wallet disconnect errors and clear local session
+      }
+      walletSessionToken = "";
+      connectedAccountId = "";
+      connectedWalletId = "";
+      connectedAccountBalance = null;
+      sessionStorage.removeItem("snowmoon_wallet_token");
+      sessionStorage.removeItem("snowmoon_wallet_account");
+      sessionStorage.removeItem("snowmoon_wallet_id");
+      const box = document.getElementById("auth-account-info");
+      if (box) box.style.display = "none";
+      renderAll();
+      showToast("Wallet disconnected.");
+    }
+
+    let intentsWidgetPollTimer = null;
+
+    function updateIntentsProgress(activeStep) {
+      for (let i = 1; i <= 4; i += 1) {
+        const el = document.getElementById(`ip-step-${i}`);
+        if (!el) continue;
+        el.style.borderColor = i <= activeStep ? "var(--accent)" : "var(--border)";
+        el.style.background = i <= activeStep ? "var(--accent-bg)" : "var(--panel-2)";
+      }
+    }
+
+    function mountIntentsWidget() {
+      if (!window.SnowMoonIntentsWidget || !document.getElementById("intents-widget-root")) return;
+      const scheme = document.documentElement.dataset.theme === "light" ? "light" : "dark";
+      window.SnowMoonIntentsWidget.mount("intents-widget-root", {
+        nearAccountId: connectedAccountId || undefined,
+        colorScheme: scheme,
+        onQuoteCreated: async (res) => {
+          updateIntentsProgress(1);
+          const dep = res.record?.depositAddress || res.quote?.depositAddress;
+          if (dep && document.getElementById("intent-deposit-addr")) {
+            document.getElementById("intent-deposit-addr").value = dep;
+          }
+          await refreshAll();
+        },
+        onTransferSuccess: async () => {
+          updateIntentsProgress(2);
+          const dep = document.getElementById("intent-deposit-addr")?.value.trim();
+          const box = document.getElementById("intent-action-preview");
+          if (box) {
+            box.style.display = "block";
+            box.innerHTML = "Cross-chain swap submitted. Verifying NEAR Mainnet USDC delivery...";
+          }
+          if (intentsWidgetPollTimer) clearInterval(intentsWidgetPollTimer);
+          let attempts = 0;
+          intentsWidgetPollTimer = setInterval(async () => {
+            attempts += 1;
+            try {
+              if (dep) {
+                const st = await apiFetch(`/api/intents/status?depositAddress=${encodeURIComponent(dep)}`);
+                if (st.record?.status === "SUCCESS") {
+                  clearInterval(intentsWidgetPollTimer);
+                  intentsWidgetPollTimer = null;
+                  if (connectedAccountId) {
+                    await apiFetch("/api/intents/verify-destination", {
+                      method: "POST",
+                      body: JSON.stringify({
+                        depositAddress: dep,
+                        expectedRecipient: connectedAccountId,
+                        customerNearAccount: connectedAccountId,
+                      }),
+                    }).catch(() => {});
+                    await refreshConnectedAccountBalance();
+                  }
+                  updateIntentsProgress(3);
+                  if (box) {
+                    box.innerHTML = "NEAR Mainnet USDC verified! Select an AI Agent and click <strong>Fund AI Agent in Wallet</strong>.";
+                  }
+                  await refreshAll();
+                }
+              }
+            } catch {
+              // Keep polling
+            }
+            if (attempts >= 30 && intentsWidgetPollTimer) {
+              clearInterval(intentsWidgetPollTimer);
+              intentsWidgetPollTimer = null;
+            }
+          }, 4000);
+        },
+      });
+    }
+
+    async function fundAgentFromVerifiedUsdc() {
+      try {
+        const customerAccountId = document.getElementById("intent-near-account").value.trim() || connectedAccountId;
+        if (!customerAccountId) {
+          openWalletModal();
+          return;
+        }
+        const operatorAccountId = document.getElementById("intent-agent-select")?.value || undefined;
+        const usdc = Number(document.getElementById("intent-escrow-amount")?.value || "0");
+        if (!Number.isFinite(usdc) || usdc <= 0) throw new Error("Enter a valid USDC funding amount.");
+        const amountAtomic = String(Math.round(usdc * 1_000_000));
+        const box = document.getElementById("intent-action-preview");
+        box.style.display = "block";
+        box.innerHTML = "Preparing Core escrow transaction for wallet approval...";
+        const res = await apiFetch("/api/near/escrow/prepare-fund", {
+          method: "POST",
+          body: JSON.stringify({
+            customerAccountId,
+            operatorAccountId,
+            customerPaymentUsdcAtomic: amountAtomic,
+          }),
+        });
+        const intentId = res.intent?.intentId || "";
+        const txs = res.preparedPayloads?.transactions || res.transactions || [];
+        if (txs.length > 0 && window.SnowMoonWalletSelector) {
+          const signed = await signPreparedTransactionsAndReconcile(txs, async (txHash) => {
+            if (intentId) {
+              await apiFetch("/api/near/escrow/submit-tx", {
+                method: "POST",
+                body: JSON.stringify({ intentId, txHash, customerAccountId }),
+              });
+              await apiFetch("/api/near/escrow/reconcile", {
+                method: "POST",
+                body: JSON.stringify({ intentId, customerAccountId }),
+              });
+            }
+            updateIntentsProgress(4);
+            box.innerHTML = `AI Agent escrow funded on NEAR Mainnet · Tx: <a href="https://nearblocks.io/txns/${esc(txHash)}" target="_blank" rel="noreferrer">${esc(shortHex(txHash))}</a>`;
+          });
+          if (signed) {
+            showToast("AI Agent escrow funded and verified on NEAR Mainnet.");
+            await refreshConnectedAccountBalance();
+            await refreshAll();
+            return;
+          }
+        }
+        box.innerHTML = "Prepared Core escrow transaction. Connect your NEAR wallet to approve.";
+      } catch (e) {
+        const box = document.getElementById("intent-action-preview");
+        if (box) {
+          box.style.display = "block";
+          box.innerHTML = `<span style="color:var(--neg);">${esc(e.message)}</span>`;
+        }
+        showToast(e.message);
+      }
+    }
+
+    function selectIntentDeposit(depositAddress) {
+      document.getElementById("intent-deposit-addr").value = depositAddress;
+      showToast(`Selected deposit address ${shortHex(depositAddress)}.`);
+    }
+
+    async function prepareIntentDeposit() {
+      try {
+        const depositAddress = document.getElementById("intent-deposit-addr").value.trim();
+        if (!depositAddress) throw new Error("Create or select a live 1Click deposit address first.");
+        const res = await apiFetch("/api/intents/prepare-deposit", {
+          method: "POST",
+          body: JSON.stringify({ depositAddress, customerNearAccount: connectedAccountId }),
+        });
+        const box = document.getElementById("intent-action-preview");
+        box.style.display = "block";
+        box.innerHTML = `Send <strong>${esc(res.instructions?.amountAtomic || "")}</strong> to <code>${esc(depositAddress)}</code> on <strong>${esc(res.instructions?.sourceChain || "")}</strong>.`;
+        showToast("Deposit instructions ready.");
+      } catch (e) { showToast(e.message); }
+    }
+
+    async function submitIntentDepositTx() {
+      try {
+        const depositAddress = document.getElementById("intent-deposit-addr").value.trim();
+        const txHash = document.getElementById("intent-source-tx").value.trim();
+        const customerNearAccount = document.getElementById("intent-near-account").value.trim() || connectedAccountId;
+        const res = await apiFetch("/api/intents/deposit-submit", {
+          method: "POST",
+          body: JSON.stringify({ depositAddress, txHash, customerNearAccount }),
+        });
+        const box = document.getElementById("intent-action-preview");
+        box.style.display = "block";
+        box.innerHTML = `Source tx submitted · Status: <strong>${esc(res.record?.status || "SUBMITTED")}</strong>`;
+        showToast("Submitted source deposit tx hash to 1Click tracker.");
+        await refreshAll();
+      } catch (e) { showToast(e.message); }
+    }
+
+    async function pollIntentStatus() {
+      try {
+        const depositAddress = document.getElementById("intent-deposit-addr").value.trim();
+        if (!depositAddress) throw new Error("Enter or create a deposit address first.");
+        const res = await apiFetch(`/api/intents/status?depositAddress=${encodeURIComponent(depositAddress)}`);
+        const box = document.getElementById("intent-action-preview");
+        box.style.display = "block";
+        box.innerHTML = `1Click Deposit Status: <strong>${esc(res.record?.status || "UNKNOWN")}</strong>`;
+        showToast(`1Click status: ${res.record?.status || "UNKNOWN"}`);
+        await refreshAll();
+      } catch (e) { showToast(e.message); }
+    }
+
+    async function verifyIntentDestination() {
+      try {
+        const depositAddress = document.getElementById("intent-deposit-addr").value.trim();
+        const expectedRecipient = document.getElementById("intent-near-account").value.trim() || connectedAccountId;
+        const res = await apiFetch("/api/intents/verify-destination", {
+          method: "POST",
+          body: JSON.stringify({ depositAddress, expectedRecipient, customerNearAccount: connectedAccountId }),
+        });
+        const box = document.getElementById("intent-action-preview");
+        box.style.display = "block";
+        box.innerHTML = `Verified NEAR Mainnet USDC receipt for <strong>${esc(expectedRecipient)}</strong>.`;
+        showToast("Verified NEAR Mainnet USDC receipt.");
+        await refreshAll();
+      } catch (e) { showToast(e.message); }
+    }
+
+    async function prepareEscrowFromIntent() {
+      try {
+        const depositAddress = document.getElementById("intent-deposit-addr").value.trim();
+        const customerAccountId = document.getElementById("intent-near-account").value.trim() || connectedAccountId;
+        if (!customerAccountId) {
+          openWalletModal();
+          return;
+        }
+        if (!depositAddress) throw new Error("Get a deposit address in Step 1 first.");
+        const workerAccountId = document.getElementById("intent-agent-select")?.value || "88b6a5aa5a966aec6f9b56229f78458beca261b1f8fa5553109072f810222169";
+        const termsHash = "0x0000000000000000000000000000000000000000000000000000000000000000";
+        const box = document.getElementById("intent-action-preview");
+        box.style.display = "block";
+        box.innerHTML = "Verifying USDC receipt &amp; preparing Core escrow for wallet approval...";
+        try {
+          await apiFetch("/api/intents/verify-destination", {
+            method: "POST",
+            body: JSON.stringify({ depositAddress, expectedRecipient: customerAccountId, customerNearAccount: customerAccountId }),
+          });
+        } catch {
+          // Ignore if already verified or proceed to prepare-escrow for exact validation error
+        }
+        const res = await apiFetch("/api/intents/prepare-escrow", {
+          method: "POST",
+          body: JSON.stringify({ depositAddress, customerAccountId, workerAccountId, termsHash }),
+        });
+        const txs = res.transactions || (res.transaction ? [res.transaction] : []);
+        if (txs.length > 0 && window.SnowMoonWalletSelector) {
+          const signed = await signPreparedTransactionsAndReconcile(txs, async (txHash) => {
+            box.innerHTML = `Core escrow funded on NEAR Mainnet · Tx: <a href="https://nearblocks.io/txns/${esc(txHash)}" target="_blank" rel="noreferrer">${esc(shortHex(txHash))}</a>`;
+            showToast(`Core escrow funded: ${shortHex(txHash)}`);
+          });
+          if (signed) {
+            await refreshAll();
+            return;
+          }
+        }
+        box.innerHTML = "Prepared Core escrow transaction. Connect your wallet to approve.";
+      } catch (e) {
+        const box = document.getElementById("intent-action-preview");
+        if (box) {
+          box.style.display = "block";
+          box.innerHTML = `<span style="color:var(--neg);">${esc(e.message)}</span>`;
+        }
+        showToast(e.message);
+      }
+    }
+
+    async function openDeliverableReview(jobId) {
+      try {
+        const token = sessionStorage.getItem("snowmoon_wallet_session") || "";
+        const res = await fetch(`/api/deliverables/${encodeURIComponent(jobId)}/preview`, {
+          headers: token ? { "x-wallet-session": token } : {},
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          throw new Error(data.error || "Unable to load deliverable preview.");
+        }
+        const p = data.preview;
+        const card = document.getElementById("deliverable-review-card");
+        card.style.display = "block";
+        document.getElementById("deliv-status-badge").textContent = p.fullDownloadUnlocked ? "SETTLED · UNLOCKED" : `${p.status} · LOCKED`;
+        document.getElementById("deliv-meta").innerHTML = `Job: <span class="mono">${esc(shortHex(p.jobId))}</span> · File: <strong>${esc(p.filename)}</strong> (${p.sizeBytes} bytes) · SHA-256: <span class="mono">${esc(shortHex(p.contentHash))}</span>`;
+        document.getElementById("deliv-preview-box").textContent = p.previewText;
+        const dlBtn = document.getElementById("deliv-download-btn");
+        dlBtn.disabled = !p.fullDownloadUnlocked;
+        dlBtn.onclick = () => downloadSettledDeliverable(p.jobId);
+        document.getElementById("deliv-accept-btn").onclick = () => prepareSettlement(p.jobId);
+        document.getElementById("deliv-reject-btn").onclick = () => rejectDeliverableWithReason(p.jobId);
+        card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      } catch (err) {
+        alert(err.message || String(err));
+      }
+    }
+
+    async function rejectDeliverableWithReason(jobId) {
+      const reason = (document.getElementById("deliv-reject-reason").value || "").trim();
+      if (!reason) {
+        alert("Please enter a rejection reason before rejecting.");
+        return;
+      }
+      const token = sessionStorage.getItem("snowmoon_wallet_session") || "";
+      const res = await fetch(`/api/deliverables/${encodeURIComponent(jobId)}/reject`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { "x-wallet-session": token } : {}),
+        },
+        body: JSON.stringify({ reason }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        alert(data.error || "Reject failed.");
+        return;
+      }
+      await openDeliverableReview(jobId);
+    }
+
+    async function downloadSettledDeliverable(jobId) {
+      const token = sessionStorage.getItem("snowmoon_wallet_session") || "";
+      const tokRes = await fetch(`/api/deliverables/${encodeURIComponent(jobId)}/download-token`, {
+        method: "POST",
+        headers: token ? { "x-wallet-session": token } : {},
+      });
+      const tokData = await tokRes.json();
+      if (!tokRes.ok || !tokData.ok) {
+        alert(tokData.error || "Download remains locked until confirmed settlement.");
+        return;
+      }
+      const dlRes = await fetch(`/api/deliverables/${encodeURIComponent(jobId)}/download?token=${encodeURIComponent(tokData.token)}`, {
+        headers: token ? { "x-wallet-session": token } : {},
+      });
+      if (!dlRes.ok) {
+        alert("Authorized download failed.");
+        return;
+      }
+      const blob = await dlRes.blob();
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `deliverable-${jobId.slice(0, 10)}.bin`;
+      a.click();
+    }
+
+    // Initialize NEAR Wallet Selector, Intents Widget, and restore session on load
+    (async () => {
+      await refreshAll();
+      mountIntentsWidget();
+      updateJobWalletSummary();
+      await initWalletSelector();
+      if (connectedAccountId) {
+        applyConnectedAccount(connectedAccountId, connectedWalletId);
+        await refreshConnectedAccountBalance();
+      }
+    })();
   </script>
 </body>
 </html>

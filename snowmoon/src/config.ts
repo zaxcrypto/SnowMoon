@@ -74,10 +74,12 @@ export interface SnowMoonConfig {
   oneClickApiBaseUrl: string;
   persistenceFile: string;
   persistenceBackend: "supabase" | "json";
+  persistenceRowMode: "kv" | "dual" | "row";
   supabaseUrl: string;
   hasSupabaseSecretKey: boolean;
   autoApproveLimitUsdc: bigint;
   isProductionMode: boolean;
+  restrictedBetaMode: boolean;
   allowSandboxDemoEndpoints: boolean;
   corsAllowedOrigin: string;
   // Strictly server-side secrets (never serialized to client responses)
@@ -87,6 +89,7 @@ export interface SnowMoonConfig {
     outlayerPaymentKey: string;
     oneClickApiKey: string;
     supabaseSecretKey: string;
+    walletSessionSecret: string;
     operatorPrivateKey: string;
     adminPrivateKey: string;
   };
@@ -98,8 +101,10 @@ export function loadConfig(envOverrides?: Record<string, string | undefined>): S
   }
   const env = envOverrides ?? process.env;
 
-  const port = Number(env.SNOWMOON_PORT || "8090");
-  const host = env.SNOWMOON_HOST || "127.0.0.1";
+  const port = Number(env.SNOWMOON_PORT || env.PORT || "8090");
+  const host =
+    env.SNOWMOON_HOST ||
+    (env.RAILWAY_ENVIRONMENT || env.RAILWAY_PROJECT_ID ? "0.0.0.0" : "127.0.0.1");
   const stateFile =
     env.SNOWMOON_STATE_FILE ||
     path.resolve(process.cwd(), ".snowmoon-state.json");
@@ -115,6 +120,39 @@ export function loadConfig(envOverrides?: Record<string, string | undefined>): S
   const rawChain = (env.SNOWMOON_CHAIN_MODE || "sandbox").toLowerCase();
   const chainMode: "sandbox" | "rpc" = rawChain === "rpc" ? "rpc" : "sandbox";
 
+  const explicitProduction =
+    (env.NODE_ENV || "").toLowerCase() === "production" ||
+    (env.SNOWMOON_ENV || "").toLowerCase() === "production" ||
+    (env.VERCEL_ENV || "").toLowerCase() === "production" ||
+    env.VERCEL === "1";
+
+  if (explicitProduction && (network !== "mainnet" || chainMode !== "rpc")) {
+    throw new Error(
+      `ERR_PRODUCTION_CONFIG_INVALID: Production startup requires SNOWMOON_NETWORK=mainnet and SNOWMOON_CHAIN_MODE=rpc (got network=${rawNet}, chainMode=${rawChain}).`
+    );
+  }
+
+  if (
+    explicitProduction &&
+    ((env.SNOWMOON_DB_MODE || "").toLowerCase() === "json" ||
+      !(env.SUPABASE_URL || "").trim() ||
+      !(env.SUPABASE_SECRET_KEY || "").trim())
+  ) {
+    throw new Error(
+      "ERR_PRODUCTION_DATABASE_REQUIRED: Production deployment requires SUPABASE_URL, SUPABASE_SECRET_KEY, and non-JSON persistence."
+    );
+  }
+  if (explicitProduction && (env.SNOWMOON_AI_MODE || "").toLowerCase() === "mock") {
+    throw new Error(
+      "ERR_PRODUCTION_AI_MODE_INVALID: SNOWMOON_AI_MODE=mock is forbidden in production deployments."
+    );
+  }
+  if (explicitProduction && !(env.WALLET_SESSION_SECRET || "").trim()) {
+    throw new Error(
+      "ERR_PRODUCTION_SESSION_SECRET_REQUIRED: WALLET_SESSION_SECRET is required in every production environment."
+    );
+  }
+
   const defaultRpc =
     network === "testnet"
       ? env.NEAR_TESTNET_RPC_URL || "https://rpc.testnet.near.org"
@@ -126,8 +164,11 @@ export function loadConfig(envOverrides?: Record<string, string | undefined>): S
 
   const nearAiApiKey = (env.NEAR_AI_API_KEY || "").trim();
   const rawAiMode = (env.SNOWMOON_AI_MODE || "auto").toLowerCase();
+  const isProdRuntime = explicitProduction || (network === "mainnet" && chainMode === "rpc");
   const aiMode: "near_ai" | "mock" =
-    rawAiMode === "near_ai" || (rawAiMode === "auto" && nearAiApiKey.length > 0)
+    rawAiMode === "mock"
+      ? "mock"
+      : rawAiMode === "near_ai" || isProdRuntime || nearAiApiKey.length > 0
       ? "near_ai"
       : "mock";
 
@@ -144,20 +185,42 @@ export function loadConfig(envOverrides?: Record<string, string | undefined>): S
       ? "outlayer"
       : "mock";
 
+  const rawRowMode = (env.SNOWMOON_DB_ROW_MODE || "kv").trim().toLowerCase();
+  if (rawRowMode !== "kv" && rawRowMode !== "dual" && rawRowMode !== "row") {
+    throw new Error(
+      `ERR_INVALID_DB_ROW_MODE: SNOWMOON_DB_ROW_MODE must be "kv", "dual", or "row" (got "${rawRowMode}").`
+    );
+  }
+  const persistenceRowMode: "kv" | "dual" | "row" = rawRowMode;
+
   const autoApproveLimitUsdc = BigInt(
     env.SNOWMOON_AUTO_APPROVE_LIMIT_USDC || "100000"
   );
 
   const isProductionMode =
-    (env.NODE_ENV || "").toLowerCase() === "production" ||
-    (env.SNOWMOON_ENV || "").toLowerCase() === "production" ||
-    (network === "mainnet" && chainMode === "rpc");
-  const allowSandboxDemoEndpoints =
-    env.SNOWMOON_ALLOW_SANDBOX_DEMO_ENDPOINTS === "true"
-      ? true
-      : env.SNOWMOON_ALLOW_SANDBOX_DEMO_ENDPOINTS === "false"
-      ? false
-      : !isProductionMode;
+    explicitProduction || (network === "mainnet" && chainMode === "rpc");
+  // Force allowSandboxDemoEndpoints=false in production regardless of env overrides.
+  const allowSandboxDemoEndpoints = isProductionMode
+    ? false
+    : env.SNOWMOON_ALLOW_SANDBOX_DEMO_ENDPOINTS === "true"
+    ? true
+    : env.SNOWMOON_ALLOW_SANDBOX_DEMO_ENDPOINTS === "false"
+    ? false
+    : true;
+  const rawRestrictedBeta = (env.SNOWMOON_RESTRICTED_BETA || "").trim().toLowerCase();
+  let restrictedBetaMode: boolean;
+  if (rawRestrictedBeta === "1" || rawRestrictedBeta === "true") {
+    restrictedBetaMode = true;
+  } else if (rawRestrictedBeta === "0" || rawRestrictedBeta === "false") {
+    restrictedBetaMode = false;
+  } else if (rawRestrictedBeta === "") {
+    // Fail closed on Vercel if SNOWMOON_RESTRICTED_BETA is omitted.
+    restrictedBetaMode = env.VERCEL === "1";
+  } else {
+    throw new Error(
+      `ERR_INVALID_RESTRICTED_BETA_CONFIG: SNOWMOON_RESTRICTED_BETA must be 1/true or 0/false, got "${rawRestrictedBeta}".`
+    );
+  }
   const corsAllowedOrigin = (env.SNOWMOON_CORS_ORIGIN || "").trim();
 
   return {
@@ -226,15 +289,19 @@ export function loadConfig(envOverrides?: Record<string, string | undefined>): S
       env.SNOWMOON_PERSISTENCE_FILE ||
       path.resolve(process.cwd(), "data", "snowmoon-phase9-state.json"),
     persistenceBackend:
-      env.SNOWMOON_DB_MODE === "json" || env.SNOWMOON_PERSISTENCE_FILE
+      env.SNOWMOON_DB_MODE === "supabase"
+        ? "supabase"
+        : env.SNOWMOON_DB_MODE === "json" || env.SNOWMOON_PERSISTENCE_FILE
         ? "json"
         : (env.SUPABASE_URL || "").trim() && (env.SUPABASE_SECRET_KEY || "").trim()
         ? "supabase"
         : "json",
+    persistenceRowMode,
     supabaseUrl: (env.SUPABASE_URL || "").trim().replace(/\/+$/, ""),
     hasSupabaseSecretKey: (env.SUPABASE_SECRET_KEY || "").trim().length > 0,
     autoApproveLimitUsdc,
     isProductionMode,
+    restrictedBetaMode,
     allowSandboxDemoEndpoints,
     corsAllowedOrigin,
     secrets: {
@@ -243,6 +310,7 @@ export function loadConfig(envOverrides?: Record<string, string | undefined>): S
       outlayerPaymentKey: (env.OUTLAYER_PAYMENT_KEY || "").trim(),
       oneClickApiKey: (env.NEAR_INTENTS_1CLICK_API_KEY || "").trim(),
       supabaseSecretKey: (env.SUPABASE_SECRET_KEY || "").trim(),
+      walletSessionSecret: (env.WALLET_SESSION_SECRET || "").trim(),
       operatorPrivateKey: (env.SNOWMOON_OPERATOR_PRIVATE_KEY || "").trim(),
       adminPrivateKey: (env.SNOWMOON_ADMIN_PRIVATE_KEY || "").trim(),
     },

@@ -576,6 +576,11 @@ export class AIWorkerAdapter {
 
     if (this.config.aiMode === "near_ai") {
       if (!this.config.secrets.nearAiApiKey) {
+        if (this.config.isProductionMode) {
+          throw new Error(
+            "ERR_AI_NOT_CONFIGURED_IN_PRODUCTION: NEAR_AI_API_KEY is required in production; mock AI fallback is disabled."
+          );
+        }
         fallbackReason = "NEAR_AI_API_KEY is not set in .env";
       } else {
         const endpoint = this.getChatCompletionsUrl();
@@ -672,10 +677,19 @@ export class AIWorkerAdapter {
             rawMsg,
             this.config.secrets.nearAiApiKey
           );
+          if (this.config.isProductionMode) {
+            throw new Error(`ERR_NEAR_AI_INFERENCE_FAILED: ${fallbackReason}`);
+          }
         } finally {
           clearTimeout(timer);
         }
       }
+    }
+
+    if (this.config.isProductionMode) {
+      throw new Error(
+        `ERR_AI_MOCK_FALLBACK_FORBIDDEN_IN_PRODUCTION: ${fallbackReason || "NEAR AI Cloud execution failed."}`
+      );
     }
 
     // Genuine deterministic local fallback execution of the task prompt + expense receipts

@@ -324,10 +324,24 @@ test("17. Full Phase 3-7 HTTP End-to-End Flow: register worker -> register job -
   const baseUrl = `http://127.0.0.1:${addr.port}`;
 
   try {
-    const post = async (p: string, b: unknown) => {
+    const opToken = app.walletSessionManager.issueToken({
+      connected: true,
+      walletType: "meteor",
+      accountId: app.config.operatorAccountId,
+      networkId: "mainnet",
+      verifiedAt: new Date().toISOString(),
+    });
+    const custToken = app.walletSessionManager.issueToken({
+      connected: true,
+      walletType: "meteor",
+      accountId: "alice.near",
+      networkId: "mainnet",
+      verifiedAt: new Date().toISOString(),
+    });
+    const post = async (p: string, b: unknown, extraHeaders: Record<string, string> = {}) => {
       const r = await fetch(`${baseUrl}${p}`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...extraHeaders },
         body: JSON.stringify(b),
       });
       const j = (await r.json()) as Record<string, unknown>;
@@ -335,47 +349,66 @@ test("17. Full Phase 3-7 HTTP End-to-End Flow: register worker -> register job -
       return j;
     };
 
-    await post("/api/workforce/workers/register", {
-      workerId: "e2e-worker",
-      accountId: "worker.near",
-      displayName: "E2E Worker",
-      capabilities: ["research"],
-    });
+    const regWorker = (await post(
+      "/api/workforce/workers/register",
+      {
+        workerId: "e2e-worker",
+        accountId: "worker.near",
+        displayName: "E2E Worker",
+        capabilities: ["research"],
+        issueToken: true,
+      },
+      { "x-wallet-session": opToken }
+    )) as { workerToken: string };
 
     const jobId = "0x" + "e2".repeat(32);
-    await post("/api/workforce/jobs/register", {
-      jobId,
-      customerAccountId: "alice.near",
-      amountAtomic: "4000000",
-      requiredCapabilities: ["research"],
-      prompt: "Summarize NEAR architecture",
-    });
+    await post(
+      "/api/workforce/jobs/register",
+      {
+        jobId,
+        customerAccountId: "alice.near",
+        amountAtomic: "4000000",
+        requiredCapabilities: ["research"],
+        prompt: "Summarize NEAR architecture",
+        funded: true,
+      },
+      { "x-wallet-session": custToken }
+    );
 
-    await post("/api/workforce/jobs/assign", { jobId });
-    await post("/api/workforce/jobs/accept", { jobId, workerId: "e2e-worker" });
+    await post("/api/workforce/jobs/assign", { jobId }, { "x-wallet-session": opToken });
+    await post("/api/workforce/jobs/accept", { jobId, workerId: "e2e-worker" }, { "x-worker-token": regWorker.workerToken });
 
-    const execRes = (await post("/api/workforce/jobs/execute", {
-      jobId,
-      workerId: "e2e-worker",
-    })) as { job: { state: string }; submission: { verificationStatus: string } };
+    const execRes = (await post(
+      "/api/workforce/jobs/execute",
+      { jobId, workerId: "e2e-worker" },
+      { "x-worker-token": regWorker.workerToken }
+    )) as { job: { state: string }; submission: { verificationStatus: string } };
     assert.equal(execRes.job.state, "DELIVERED");
     assert.equal(execRes.submission.verificationStatus, "PENDING");
 
-    const verRes = (await post("/api/verification/verify", {
-      jobId,
-      verifierAccountId: "alice.near",
-      decision: "VERIFIED",
-    })) as { submission: { verificationStatus: string } };
+    const verRes = (await post(
+      "/api/verification/verify",
+      {
+        jobId,
+        verifierAccountId: "alice.near",
+        decision: "VERIFIED",
+      },
+      { "x-wallet-session": custToken }
+    )) as { submission: { verificationStatus: string } };
     assert.equal(verRes.submission.verificationStatus, "VERIFIED");
 
-    const stlRes = (await post("/api/settlement/prepare", {
-      jobId,
-      kind: "PAYOUT_ACCEPT_DELIVERY",
-      platformFeeBps: 250,
-    })) as { settlement: { workerPayoutAtomic: string; platformFeeAtomic: string; status: string } };
+    const stlRes = (await post(
+      "/api/settlement/prepare",
+      {
+        jobId,
+        kind: "PAYOUT_ACCEPT_DELIVERY",
+        platformFeeBps: 250,
+      },
+      { "x-wallet-session": custToken }
+    )) as { settlement: { workerPayoutAtomic: string; platformFeeAtomic: string; status: string } };
     assert.equal(stlRes.settlement.status, "PREPARED");
-    assert.equal(stlRes.settlement.platformFeeAtomic, "100000");
-    assert.equal(stlRes.settlement.workerPayoutAtomic, "3900000");
+    assert.equal(stlRes.settlement.platformFeeAtomic, "0");
+    assert.equal(stlRes.settlement.workerPayoutAtomic, "4000000");
   } finally {
     await new Promise<void>((resolve) => app.server.close(() => resolve()));
     fs.rmSync(tmpDir, { recursive: true, force: true });

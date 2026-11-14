@@ -10,13 +10,28 @@
   "scripts": {
     "start": "node --experimental-strip-types src/server.ts",
     "dev": "node --experimental-strip-types --watch src/server.ts",
+    "build:wallet": "esbuild src/wallet-selector-entry.ts --bundle --platform=browser --format=iife --outfile=public/wallet-selector.js --define:global=globalThis --inject:src/wallet-browser-shims.ts --alias:crypto=./src/wallet-crypto-shim.ts --external:http --external:https",
+    "build:intents-widget": "esbuild src/intents-widget-entry.tsx --bundle --platform=browser --format=iife --outfile=public/intents-widget.js --define:global=globalThis --inject:src/wallet-browser-shims.ts --alias:crypto=./src/wallet-crypto-shim.ts --alias:valtio/utils=./node_modules/valtio/vanilla/utils.js --external:http --external:https --loader:.woff2=dataurl --loader:.woff=dataurl --loader:.svg=dataurl",
     "typecheck": "tsc --noEmit",
-    "build": "tsc --noEmit",
+    "build": "npm run build:wallet && npm run build:intents-widget && tsc --noEmit",
     "outlayer:smoke": "node --experimental-strip-types src/outlayer-smoke.ts",
-    "test": "node --experimental-strip-types --test --test-concurrency=1 test/mvp-journey.test.ts test/mainnet-escrow.test.ts test/workforce-e2e.test.ts test/phase9-e2e.test.ts test/phase10-security.test.ts test/phase11-launch.test.ts test/phase13-audit.test.ts test/phase14-e2e.test.ts test/phase15-release.test.ts test/phase16-rc.test.ts test/phase17-audit-anchor.test.ts test/phase19-launch-readiness.test.ts test/phase20-production-policy.test.ts test/phase21-launch-validation.test.ts test/phase22-workforce-e2e.test.ts test/phase23-production-readiness.test.ts"
+    "test": "node --experimental-strip-types --test --test-concurrency=1 test/mvp-journey.test.ts test/mainnet-escrow.test.ts test/workforce-e2e.test.ts test/phase9-e2e.test.ts test/phase10-security.test.ts test/phase11-launch.test.ts test/phase13-audit.test.ts test/phase14-e2e.test.ts test/phase15-release.test.ts test/phase16-rc.test.ts test/phase17-audit-anchor.test.ts test/phase19-launch-readiness.test.ts test/phase20-production-policy.test.ts test/phase21-launch-validation.test.ts test/phase22-workforce-e2e.test.ts test/phase23-production-readiness.test.ts test/phase25-production-hardening.test.ts test/phase26-lifecycle-audit.test.ts test/phase27-phase12-complete.test.ts test/phase28-phase13-verification.test.ts"
   },
   "devDependencies": {
+    "@aurora-is-near/intents-swap-widget-standalone": "^7.31.0",
+    "@near-wallet-selector/core": "^10.1.4",
+    "@near-wallet-selector/here-wallet": "^10.1.4",
+    "@near-wallet-selector/meteor-wallet": "^10.1.4",
+    "@near-wallet-selector/modal-ui": "^8.9.14",
+    "@near-wallet-selector/my-near-wallet": "^10.1.4",
     "@types/node": "^26.6.6",
-    "typescript": "^7.0.2"
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "buffer": "^6.0.3",
+    "esbuild": "^0.28.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^7.0.2",
+    "util": "^0.12.5"
   }
 }

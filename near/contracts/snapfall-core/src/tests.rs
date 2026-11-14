@@ -1378,7 +1378,7 @@ fn test_full_persistent_storage_delta_gate() {
         U128(usdc(25)),
         U128(usdc(12)),
         h(0xaa),
-        9_999_999_999,
+        999_999,
     );
     let u2 = flush_contract_storage(&mut c);
     let delta_create_job = u2 - u1;
@@ -1405,7 +1405,7 @@ fn test_full_persistent_storage_delta_gate() {
         U128(usdc(25)),
         U128(usdc(12)),
         h(0xaa),
-        9_999_999_999,
+        999_999,
     );
     ctx_keep_storage("usdc.testnet", 0, 1_004, 5, vec![]);
     let msg291 = serde_json::json!({"FundJob": {"job_id": j(201)}}).to_string();
@@ -1458,7 +1458,7 @@ fn test_full_persistent_storage_delta_gate() {
             "operator": &long_op,
             "max_operating_budget": U128(usdc(12)),
             "terms_hash": h(0xaa),
-            "deadline": 9_999_999_999u64
+            "deadline": 999_999u64
         }
     })
     .to_string();
@@ -1500,7 +1500,7 @@ fn test_full_persistent_storage_delta_gate() {
     let peak_cust = format!("{}.test.near", "q".repeat(54));
     let u_peak0 = flush_contract_storage(&mut c);
     ctx_keep_storage(&peak_op, STORAGE_COST, 1_010, 20, vec![]);
-    let pj = create_job_t(&mut c, 202, acc(&peak_cust), acc(&peak_op), U128(usdc(25)), U128(usdc(12)), h(0xaa), 9_999_999_999);
+    let pj = create_job_t(&mut c, 202, acc(&peak_cust), acc(&peak_op), U128(usdc(25)), U128(usdc(12)), h(0xaa), 999_999);
     ctx_keep_storage("usdc.testnet", 0, 1_010, 20, vec![]);
     let _ = c.ft_on_transfer(acc(&peak_cust), U128(usdc(25)), serde_json::json!({"FundJob": {"job_id": pj}}).to_string());
     let op_adv = c.next_op_id;
@@ -1557,7 +1557,7 @@ fn test_cancel_deletes_job_and_refunds_exactly() {
     for i in 0..3u8 {
         let seq_before = c.next_job_seq();
         ctx_keep_storage(&long_op, 0, 1_001 + i as u64, 2 + i as u64, vec![]);
-        let id = create_job_t(&mut c, 200 + i, acc(&long_cust), acc(&long_op), U128(usdc(25)), U128(usdc(12)), h(0xaa), 9_999_999_999);
+        let id = create_job_t(&mut c, 200 + i, acc(&long_cust), acc(&long_op), U128(usdc(25)), U128(usdc(12)), h(0xaa), 999_999);
         assert_eq!(id, crate::derive_job_id(&acc(&long_op), seq_before));
         assert_eq!(c.next_job_seq(), seq_before + 1);
         assert!(!seen.contains(&id));
@@ -2045,4 +2045,161 @@ fn test_lp_and_claim_storage_bytes_are_covered() {
     assert!(covers(LP_CLAIM_SLOT_STAKE, slot_total));
     assert!(covers(LP_SHARE_STAKE, exit_inflight + 2 * slot_total));
     assert!(covers(STORAGE_REGISTRATION, registration_total));
+}
+
+#[test]
+#[should_panic(expected = "ERR_DEADLINE_EXPIRED")]
+fn phase10_create_job_rejects_expired_deadline() {
+    let mut c = setup_core();
+    fund_storage(&mut c, "op.testnet", STORAGE_COST);
+    ctx("op.testnet", 0, 1_000, 1, vec![]);
+    c.create_job(acc("cust.testnet"), acc("op.testnet"), U128(usdc(10)), U128(usdc(5)), h(1), 1_000);
+}
+
+#[test]
+#[should_panic(expected = "ERR_DEADLINE_TOO_FAR")]
+fn phase10_create_job_rejects_excessively_distant_deadline() {
+    let mut c = setup_core();
+    fund_storage(&mut c, "op.testnet", STORAGE_COST);
+    ctx("op.testnet", 0, 1_000, 1, vec![]);
+    c.create_job(
+        acc("cust.testnet"),
+        acc("op.testnet"),
+        U128(usdc(10)),
+        U128(usdc(5)),
+        h(2),
+        1_000 + crate::vault::MAX_JOB_DURATION_SEC + 1,
+    );
+}
+
+#[test]
+#[should_panic(expected = "ERR_DEADLINE_TOO_FAR")]
+fn phase10_create_and_fund_rejects_u64_max_deadline() {
+    let mut c = setup_core();
+    fund_storage(&mut c, "cust.testnet", STORAGE_COST);
+    ctx("usdc.testnet", 0, 1_000, 1, vec![]);
+    let msg = format!(
+        r#"{{"CreateAndFundJob":{{"operator":"op.testnet","max_operating_budget":"5000000","terms_hash":"{}","deadline":{}}}}}"#,
+        h(3).to_hex(),
+        u64::MAX
+    );
+    let _ = c.ft_on_transfer(acc("cust.testnet"), U128(usdc(10)), msg);
+}
+
+#[test]
+#[should_panic(expected = "ERR_DEADLINE_TOO_FAR")]
+fn phase10_create_and_fund_rejects_milliseconds_deadline() {
+    let mut c = setup_core();
+    fund_storage(&mut c, "cust.testnet", STORAGE_COST);
+    ctx("usdc.testnet", 0, 1_700_000_000, 1, vec![]);
+    let ms_deadline = 1_700_000_000u64 * 1_000 + 3_600_000;
+    let msg = format!(
+        r#"{{"CreateAndFundJob":{{"operator":"op.testnet","max_operating_budget":"5000000","terms_hash":"{}","deadline":{}}}}}"#,
+        h(4).to_hex(),
+        ms_deadline
+    );
+    let _ = c.ft_on_transfer(acc("cust.testnet"), U128(usdc(10)), msg);
+}
+
+#[test]
+fn phase10_resolve_stuck_advance_payout_prevents_duplicate_payout_and_preserves_customer_refund() {
+    let mut c = setup_core();
+    seed_pool(&mut c, usdc(1_000));
+    fund_storage(&mut c, "op.testnet", STORAGE_COST);
+    ctx("op.testnet", 0, 1_000, 1, vec![]);
+    let job_id = create_job_t(
+        &mut c,
+        99,
+        acc("cust.testnet"),
+        acc("op.testnet"),
+        U128(usdc(100)),
+        U128(usdc(5)),
+        h(5),
+        5_000,
+    );
+    ctx("usdc.testnet", 0, 1_000, 1, vec![]);
+    let msg = format!(r#"{{"FundJob":{{"job_id":"{}"}}}}"#, job_id.to_hex());
+    let _ = c.ft_on_transfer(acc("cust.testnet"), U128(usdc(100)), msg);
+
+    let op_id = c.next_op_id;
+    ctx("op.testnet", 0, 1_001, 2, vec![]);
+    let _ = c.request_advance(job_id, U128(usdc(50)));
+    assert_eq!(c.get_advance(job_id).unwrap().status, AdvanceStatus::PayoutPending);
+
+    // Flag stuck at block 102 (>= 2 + 100) and resolve as claimable
+    ctx("admin.testnet", 1, 1_100, 102, vec![]);
+    c.flag_stuck_op(op_id, "stuck advance callback".to_string());
+    c.resolve_stuck_advance_payout(op_id, true);
+
+    assert_eq!(c.get_advance(job_id).unwrap().status, AdvanceStatus::Issued);
+    assert_eq!(c.claimable_of(acc("op.testnet")).0, usdc(50));
+    assert!(c.get_pending_op(op_id).is_none());
+
+    // Late callback arrival must be a no-op (no duplicate payout/claimable credit)
+    ctx("core.snapfall.testnet", 0, 1_101, 103, vec![PromiseResult::Failed]);
+    c.on_payout_complete(op_id);
+    assert_eq!(c.claimable_of(acc("op.testnet")).0, usdc(50));
+
+    // Customer refund still restores 100% of escrowed USDC first
+    ctx("cust.testnet", 0, 5_001, 104, vec![]);
+    let _ = c.refund(job_id);
+    assert_eq!(c.get_job(job_id).unwrap().status, JobStatus::Refunding);
+    assert_eq!(c.get_advance(job_id).unwrap().status, AdvanceStatus::WrittenOff);
+}
+
+#[test]
+#[should_panic(expected = "ERR_INVALID_STATUS")]
+fn phase12_duplicate_accept_during_settling_blocked() {
+    let mut c = setup_core();
+    fund_storage(&mut c, "op.testnet", STORAGE_COST);
+    ctx("op.testnet", 0, 1_000, 1, vec![]);
+    let job_id = create_job_t(
+        &mut c,
+        100,
+        acc("cust.testnet"),
+        acc("op.testnet"),
+        U128(usdc(100)),
+        U128(usdc(10)),
+        h(7),
+        5_000,
+    );
+    ctx("usdc.testnet", 0, 1_000, 1, vec![]);
+    let msg = format!(r#"{{"FundJob":{{"job_id":"{}"}}}}"#, job_id.to_hex());
+    let _ = c.ft_on_transfer(acc("cust.testnet"), U128(usdc(100)), msg);
+
+    ctx("op.testnet", 0, 1_001, 2, vec![]);
+    c.start_work(job_id);
+    c.submit_delivery(job_id, h(8));
+
+    ctx("cust.testnet", 1, 1_002, 3, vec![]);
+    let _ = c.accept_delivery(job_id);
+    assert_eq!(c.get_job(job_id).unwrap().status, JobStatus::Settling);
+
+    // Second accept_delivery while Settling must panic with ERR_INVALID_STATUS
+    let _ = c.accept_delivery(job_id);
+}
+
+#[test]
+fn phase12_customer_no_delivery_refund_respects_deadline() {
+    let mut c = setup_core();
+    fund_storage(&mut c, "op.testnet", STORAGE_COST);
+    ctx("op.testnet", 0, 1_000, 1, vec![]);
+    let job_id = create_job_t(
+        &mut c,
+        101,
+        acc("cust.testnet"),
+        acc("op.testnet"),
+        U128(usdc(100)),
+        U128(usdc(10)),
+        h(9),
+        5_000,
+    );
+    ctx("usdc.testnet", 0, 1_000, 1, vec![]);
+    let msg = format!(r#"{{"FundJob":{{"job_id":"{}"}}}}"#, job_id.to_hex());
+    let _ = c.ft_on_transfer(acc("cust.testnet"), U128(usdc(100)), msg);
+
+    // After deadline, customer can refund directly without any delivery submission
+    ctx("cust.testnet", 1, 5_000, 2, vec![]);
+    let _ = c.refund(job_id);
+    assert_eq!(c.get_job(job_id).unwrap().status, JobStatus::Refunding);
 }

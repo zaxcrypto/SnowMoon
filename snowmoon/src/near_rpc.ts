@@ -356,7 +356,10 @@ export class NearMainnetRpcAdapter {
     params: unknown
   ): Promise<{ ok: boolean; result?: T; error?: unknown }> {
     const primaryUrl = this.getRpcUrl();
-    const fallbackUrl = "https://free.rpc.fastnear.com";
+    const fallbackUrl =
+      primaryUrl === "https://rpc.mainnet.near.org"
+        ? "https://free.rpc.fastnear.com"
+        : "https://rpc.mainnet.near.org";
     let lastError: unknown = "Unknown RPC error";
     for (let attempt = 1; attempt <= 3; attempt++) {
       const targetUrl =
@@ -506,6 +509,43 @@ export class NearMainnetRpcAdapter {
       lockedYocto: res.result.locked,
       storageUsageBytes: res.result.storage_usage,
       codeHash: res.result.code_hash,
+    };
+  }
+
+  /**
+   * Read-only `view_access_key` query on NEAR Mainnet (`finality: "final"`).
+   */
+  public async viewAccessKey(
+    accountId: string,
+    publicKey: string
+  ): Promise<{
+    exists: boolean;
+    permission?: "FullAccess" | { FunctionCall: unknown };
+    nonce?: number;
+    error?: string;
+  }> {
+    const res = await this.rpcCall<{
+      permission: "FullAccess" | { FunctionCall: unknown };
+      nonce: number;
+    }>("query", {
+      request_type: "view_access_key",
+      finality: "final",
+      account_id: accountId,
+      public_key: publicKey,
+    });
+
+    if (!res.ok || !res.result) {
+      const errObj = res.error as { cause?: { name?: string }; message?: string };
+      return {
+        exists: false,
+        error: errObj?.cause?.name || errObj?.message || "ACCESS_KEY_NOT_FOUND",
+      };
+    }
+
+    return {
+      exists: true,
+      permission: res.result.permission,
+      nonce: res.result.nonce,
     };
   }
 
@@ -979,6 +1019,27 @@ export class NearMainnetRpcAdapter {
    */
   public async queryCoreJob(jobId: string, coreContractId = this.config.mainnetCoreContractId) {
     return this.callViewMethod(coreContractId, "get_job", { job_id: jobId });
+  }
+
+  public async queryCoreAccounting(coreContractId = this.config.mainnetCoreContractId) {
+    return this.callViewMethod<CoreAccountingRpcView>(coreContractId, "accounting", {});
+  }
+
+  public async queryCoreAdvance(jobId: string, coreContractId = this.config.mainnetCoreContractId) {
+    return this.callViewMethod<{
+      job_id: string;
+      operator_org: string;
+      principal: string;
+      fee: string;
+      rate_bps: number;
+      opened_at: number;
+      status: string;
+      active_op_id?: number | null;
+    } | null>(coreContractId, "get_advance", { job_id: jobId });
+  }
+
+  public async queryCoreAdvanceRate(org: string, coreContractId = this.config.mainnetCoreContractId) {
+    return this.callViewMethod<number>(coreContractId, "advance_rate", { org });
   }
 
   public async queryCoreStorageCredit(
