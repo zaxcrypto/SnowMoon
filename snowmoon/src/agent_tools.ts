@@ -46,10 +46,24 @@ export interface OpenAIToolDefinition {
   };
 }
 
+import {
+  discoverNearMarketAgents,
+  hireBestMarketAgentWithFailover,
+  type Nep366X402Signer,
+} from "./near_market_x402.ts";
+import { DeterministicSpendingPolicyEngine } from "./spending_policy.ts";
+
 export interface AgentToolContext {
   fetchImpl: typeof fetch;
   nearRpcUrl?: string;
   githubToken?: string;
+  jobId?: string;
+  jobBudgetAtomic?: string;
+  spendingPolicy?: DeterministicSpendingPolicyEngine;
+  nearAccountId?: string;
+  nearPrivateKey?: string;
+  x402DelegateSigner?: Nep366X402Signer;
+  onTrace?: (evt: { stage: string; status: string; title: string; detail?: string }) => void;
 }
 
 const AUDIT_KEYWORDS =
@@ -69,9 +83,25 @@ export function selectModelForTask(params: {
   const cap = (params.capability || "").toLowerCase();
   const prompt = params.prompt || "";
   const amount = Number(params.amountAtomic || "0");
-  const isEnterpriseBudget = Number.isFinite(amount) && amount >= 5_000_000; // >= $5.00 USDC
-  const isHighBudget = Number.isFinite(amount) && amount >= 1_000_000; // >= $1.00 USDC
-  const isMidBudget = Number.isFinite(amount) && amount >= 100_000; // >= $0.10 USDC
+  const validAmount = Number.isFinite(amount) && amount > 0 ? amount : 0;
+
+  // 5-band price-performance budget tiers (6-decimal USDC atomic units):
+  // - enterprise: >= $25.00 (25_000_000) -> flagship Opus / GPT-5.4
+  // - growth:     $5.00 - $24.99 (5_000_000) -> Sonnet 4.6 / Gemini 2.5 Pro (sweet spot for $10 jobs)
+  // - pro:        $1.00 - $4.99 (1_000_000)  -> Gemini 2.5 Pro / Gemini 2.5 Flash
+  // - standard:   $0.10 - $0.99 (100_000)    -> DeepSeek v3.2 / Gemini 2.5 Flash
+  // - micro:      < $0.10 (< 100_000)        -> Gemini 2.5 Flash-Lite / DeepSeek v4.1 Flash (loss-proof at $0.01)
+  const band =
+    validAmount >= 25_000_000
+      ? "enterprise"
+      : validAmount >= 5_000_000
+      ? "growth"
+      : validAmount >= 1_000_000
+      ? "pro"
+      : validAmount >= 100_000
+      ? "standard"
+      : "micro";
+  const usdLabel = `$${(validAmount / 1e6).toFixed(2)} USDC`;
 
   if (forced) {
     return {
@@ -84,61 +114,178 @@ export function selectModelForTask(params: {
     };
   }
 
-  if (cap === "audit" || cap === "security-audit" || AUDIT_KEYWORDS.test(prompt)) {
-    const primary = isEnterpriseBudget
-      ? "anthropic/claude-opus-4-7"
-      : isHighBudget
-      ? "anthropic/claude-sonnet-4-6"
-      : "deepseek/deepseek-v3.2";
+  const isAudit =
+    cap === "audit" ||
+    cap === "security-audit" ||
+    cap === "security_audit" ||
+    (!cap && AUDIT_KEYWORDS.test(prompt));
+  const isCode =
+    !isAudit &&
+    (cap === "code" ||
+      cap === "code-review" ||
+      cap === "code_review" ||
+      (!cap && CODE_KEYWORDS.test(prompt)));
+  const isResearch =
+    !isAudit &&
+    !isCode &&
+    (cap === "research" || (!cap && RESEARCH_KEYWORDS.test(prompt)));
+
+  if (isAudit) {
+    const map = {
+      enterprise: {
+        primary: "anthropic/claude-opus-4-7",
+        fallbacks: ["anthropic/claude-sonnet-4-6", "google/gemini-2.5-pro", "deepseek/deepseek-v3.2"],
+        critic: "anthropic/claude-sonnet-4-6",
+        maxTokens: 8000,
+        maxToolRounds: 6,
+      },
+      growth: {
+        primary: "anthropic/claude-sonnet-4-6",
+        fallbacks: ["google/gemini-2.5-pro", "deepseek/deepseek-v3.2", "openai/gpt-5.4-mini"],
+        critic: "deepseek/deepseek-v3.2",
+        maxTokens: 6000,
+        maxToolRounds: 6,
+      },
+      pro: {
+        primary: "google/gemini-2.5-pro",
+        fallbacks: ["deepseek/deepseek-v3.2", "anthropic/claude-haiku-4-5", "google/gemini-2.5-flash"],
+        critic: undefined,
+        maxTokens: 4500,
+        maxToolRounds: 5,
+      },
+      standard: {
+        primary: "deepseek/deepseek-v3.2",
+        fallbacks: ["google/gemini-2.5-flash", "openai/gpt-5.4-mini", "google/gemini-2.5-flash-lite"],
+        critic: undefined,
+        maxTokens: 3500,
+        maxToolRounds: 4,
+      },
+      micro: {
+        primary: "google/gemini-2.5-flash-lite",
+        fallbacks: ["deepseek/deepseek-v4.1-flash", "openai/gpt-5.4-nano"],
+        critic: undefined,
+        maxTokens: 1500,
+        maxToolRounds: 2,
+      },
+    }[band];
     return {
       tier: "tier3_audit",
-      primaryModel: primary,
-      fallbackModels: isHighBudget
-        ? ["deepseek/deepseek-v3.2"]
-        : ["google/gemini-2.5-flash-lite"],
-      criticModel: isHighBudget ? "deepseek/deepseek-v3.2" : undefined,
-      maxTokens: isHighBudget ? 6000 : 4096,
-      maxToolRounds: isHighBudget ? 6 : 4,
-      reason: `Budget-aware audit routed to ${primary} (budget: $${(amount / 1e6).toFixed(2)} USDC)`,
+      primaryModel: map.primary,
+      fallbackModels: map.fallbacks,
+      criticModel: map.critic,
+      maxTokens: map.maxTokens,
+      maxToolRounds: map.maxToolRounds,
+      reason: `Budget-proportional (${band}) audit routed to ${map.primary} (${usdLabel})`,
     };
   }
 
-  if (cap === "code" || cap === "code-review" || CODE_KEYWORDS.test(prompt)) {
-    const primary = isHighBudget ? "anthropic/claude-sonnet-4-6" : "deepseek/deepseek-v3.2";
+  if (isCode) {
+    const map = {
+      enterprise: {
+        primary: "anthropic/claude-opus-4-7",
+        fallbacks: ["anthropic/claude-sonnet-4-6", "openai/gpt-5.4"],
+        critic: "openai/gpt-5.4",
+        maxTokens: 8000,
+        maxToolRounds: 6,
+      },
+      growth: {
+        primary: "anthropic/claude-sonnet-4-6",
+        fallbacks: ["google/gemini-2.5-pro", "deepseek/deepseek-v3.2"],
+        critic: undefined,
+        maxTokens: 6000,
+        maxToolRounds: 5,
+      },
+      pro: {
+        primary: "google/gemini-2.5-pro",
+        fallbacks: ["deepseek/deepseek-v3.2", "openai/gpt-5.4-mini"],
+        critic: undefined,
+        maxTokens: 4500,
+        maxToolRounds: 5,
+      },
+      standard: {
+        primary: "deepseek/deepseek-v3.2",
+        fallbacks: ["google/gemini-2.5-flash", "google/gemini-2.5-flash-lite"],
+        critic: undefined,
+        maxTokens: 3500,
+        maxToolRounds: 4,
+      },
+      micro: {
+        primary: "google/gemini-2.5-flash-lite",
+        fallbacks: ["deepseek/deepseek-v4.1-flash", "openai/gpt-5.4-nano"],
+        critic: undefined,
+        maxTokens: 1500,
+        maxToolRounds: 2,
+      },
+    }[band];
     return {
       tier: "tier2_code",
-      primaryModel: primary,
-      fallbackModels: isHighBudget ? ["deepseek/deepseek-v3.2"] : ["google/gemini-2.5-flash-lite"],
-      criticModel: isEnterpriseBudget ? "openai/gpt-5.4" : undefined,
-      maxTokens: isHighBudget ? 6000 : 4096,
-      maxToolRounds: isHighBudget ? 5 : 4,
-      reason: `Budget-aware code task routed to ${primary}`,
+      primaryModel: map.primary,
+      fallbackModels: map.fallbacks,
+      criticModel: map.critic,
+      maxTokens: map.maxTokens,
+      maxToolRounds: map.maxToolRounds,
+      reason: `Budget-proportional (${band}) code task routed to ${map.primary} (${usdLabel})`,
     };
   }
 
-  if (cap === "research" || RESEARCH_KEYWORDS.test(prompt) || isMidBudget) {
-    const primary = isHighBudget ? "anthropic/claude-sonnet-4-6" : "deepseek/deepseek-v3.2";
+  if (isResearch) {
+    const map = {
+      enterprise: {
+        primary: "openai/gpt-5.4",
+        fallbacks: ["anthropic/claude-sonnet-4-6", "google/gemini-2.5-pro"],
+        maxTokens: 6000,
+        maxToolRounds: 6,
+      },
+      growth: {
+        primary: "google/gemini-2.5-pro",
+        fallbacks: ["deepseek/deepseek-v3.2", "openai/gpt-5.4-mini"],
+        maxTokens: 4500,
+        maxToolRounds: 5,
+      },
+      pro: {
+        primary: "google/gemini-2.5-flash",
+        fallbacks: ["deepseek/deepseek-v3.2", "openai/gpt-5.4-mini"],
+        maxTokens: 3500,
+        maxToolRounds: 4,
+      },
+      standard: {
+        primary: "deepseek/deepseek-v3.2",
+        fallbacks: ["google/gemini-2.5-flash", "google/gemini-2.5-flash-lite"],
+        maxTokens: 3000,
+        maxToolRounds: 4,
+      },
+      micro: {
+        primary: "google/gemini-2.5-flash-lite",
+        fallbacks: ["deepseek/deepseek-v4.1-flash", "openai/gpt-5.4-nano"],
+        maxTokens: 1500,
+        maxToolRounds: 3,
+      },
+    }[band];
     return {
       tier: "tier2_research",
-      primaryModel: primary,
-      fallbackModels: ["google/gemini-2.5-flash-lite"],
-      maxTokens: 3000,
-      maxToolRounds: 4,
-      reason: `Live research task routed to ${primary} with tool calling`,
+      primaryModel: map.primary,
+      fallbackModels: map.fallbacks,
+      maxTokens: map.maxTokens,
+      maxToolRounds: map.maxToolRounds,
+      reason: `Budget-proportional (${band}) research routed to ${map.primary} (${usdLabel})`,
     };
   }
+
+  const fastMap = {
+    enterprise: { primary: "openai/gpt-5.4", fallbacks: ["anthropic/claude-sonnet-4-6"], maxTokens: 4000, maxToolRounds: 5 },
+    growth: { primary: "google/gemini-2.5-pro", fallbacks: ["google/gemini-2.5-flash", "deepseek/deepseek-v3.2"], maxTokens: 3500, maxToolRounds: 4 },
+    pro: { primary: "google/gemini-2.5-flash", fallbacks: ["deepseek/deepseek-v3.2"], maxTokens: 2500, maxToolRounds: 4 },
+    standard: { primary: "google/gemini-2.5-flash", fallbacks: ["google/gemini-2.5-flash-lite", "deepseek/deepseek-v3.2"], maxTokens: 2000, maxToolRounds: 4 },
+    micro: { primary: "google/gemini-2.5-flash-lite", fallbacks: ["deepseek/deepseek-v4.1-flash", "openai/gpt-5.4-nano"], maxTokens: 1500, maxToolRounds: 3 },
+  }[band];
 
   return {
     tier: "tier1_fast",
-    primaryModel: "google/gemini-2.5-flash-lite",
-    fallbackModels: [
-      "deepseek/deepseek-v4.1-flash",
-      "deepseek/deepseek-v3.2",
-      params.defaultModel || "deepseek/deepseek-v3.2",
-    ],
-    maxTokens: 1500,
-    maxToolRounds: 4,
-    reason: "Fast/lightweight task routed to Tier-1 low-cost model (google/gemini-2.5-flash-lite)",
+    primaryModel: fastMap.primary,
+    fallbackModels: fastMap.fallbacks,
+    maxTokens: fastMap.maxTokens,
+    maxToolRounds: fastMap.maxToolRounds,
+    reason: `Budget-proportional (${band}) fast task routed to ${fastMap.primary} (${usdLabel})`,
   };
 }
 
@@ -283,6 +430,43 @@ export const AGENT_TOOL_DEFINITIONS: OpenAIToolDefinition[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "discover_near_market_agents",
+      description:
+        "Discover live specialized AI agents on the NEAR AI Agent Market (https://market.near.ai) that accept USDC via x402. Returns handle, category, success rate, SLA, and price in USDC.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Search keywords (e.g. 'research', 'security', 'solidity', 'data')" },
+          category: {
+            type: "string",
+            description: "Optional category slug: research, dev_tools, finance, legal_compliance, automation, data, marketing, other",
+          },
+          max_price_usdc: { type: "number", description: "Optional maximum price per call in USDC" },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "hire_near_market_agent",
+      description:
+        "Hire a specialized agent from market.near.ai over A2A + x402 (near:mainnet USDC NEP-366 delegate payment), subject to SnowMoon SpendingPolicy and remaining job budget. Returns the specialist's completed artifact text.",
+      parameters: {
+        type: "object",
+        properties: {
+          handle: { type: "string", description: "The agent handle from discover_near_market_agents (e.g. 'web-research')" },
+          task_prompt: { type: "string", description: "Clear task title on first line followed by the detailed brief" },
+          max_budget_usdc: { type: "number", description: "Optional max USDC to spend on this hire (cannot exceed job budget)" },
+        },
+        required: ["handle", "task_prompt"],
+      },
+    },
+  },
 ];
 
 export function isSafePublicHttpUrl(rawUrl: string): boolean {
@@ -419,10 +603,11 @@ export async function executeAgentTool(
   ctx: AgentToolContext
 ): Promise<{ ok: boolean; output: string; summary: string }> {
   const rawFetch = ctx.fetchImpl;
+  const toolTimeoutMs = toolName === "hire_near_market_agent" ? 90_000 : 12_000;
   const timedCtx: AgentToolContext = {
     ...ctx,
     fetchImpl: ((input: string | URL | Request, init?: RequestInit) =>
-      fetchWithToolTimeout(rawFetch, String(input), init)) as typeof fetch,
+      fetchWithToolTimeout(rawFetch, String(input), init, toolTimeoutMs)) as typeof fetch,
   };
   ctx = timedCtx;
   try {
@@ -762,6 +947,94 @@ export async function executeAgentTool(
         ok: true,
         output: matches.length > 0 ? matches.join("\n") : txt.slice(0, 4000),
         summary: `${matches.length} NEAR doc links`,
+      };
+    }
+
+    if (toolName === "discover_near_market_agents") {
+      const query = String(rawArgs.query || "").trim();
+      const category = typeof rawArgs.category === "string" ? rawArgs.category.trim() : undefined;
+      const maxPriceUsdc =
+        typeof rawArgs.max_price_usdc === "number" && Number.isFinite(rawArgs.max_price_usdc)
+          ? rawArgs.max_price_usdc
+          : undefined;
+      const agents = await discoverNearMarketAgents({
+        query,
+        category,
+        maxPriceUsdc,
+        fetchImpl: ctx.fetchImpl,
+      });
+      if (agents.length === 0) {
+        return {
+          ok: true,
+          output: `No available NEAR AI Market agents matched query="${query}".`,
+          summary: "0 market agents",
+        };
+      }
+      const lines = agents.map(
+        (a, i) =>
+          `${i + 1}. @${a.handle} (${a.name}) — category=${a.category}, price=${a.priceUsdc ? `$${a.priceUsdc} USDC` : "402 quote"}, sla=${a.slaSeconds}s, delivered=${a.deliveredJobs}, success=${a.successRate}%\n   ${a.description}`
+      );
+      return {
+        ok: true,
+        output: `NEAR AI Agent Market candidates:\n${lines.join("\n")}`,
+        summary: `${agents.length} market agents`,
+      };
+    }
+
+    if (toolName === "hire_near_market_agent") {
+      const handle = String(rawArgs.handle || "").trim();
+      const taskPrompt = String(rawArgs.task_prompt || "").trim();
+      if (!handle || !taskPrompt) {
+        return {
+          ok: false,
+          output: "Missing required handle or task_prompt.",
+          summary: "invalid args",
+        };
+      }
+      const jobBudget = BigInt(ctx.jobBudgetAtomic || "100000"); // default $0.10 cap if unset
+      const defaultPerHireCap = jobBudget < 250_000n ? jobBudget : 250_000n; // Least-cost cap: max $0.25 unless explicitly raised
+      const requestedMaxAtomic =
+        typeof rawArgs.max_budget_usdc === "number" && Number.isFinite(rawArgs.max_budget_usdc) && rawArgs.max_budget_usdc > 0
+          ? BigInt(Math.round(rawArgs.max_budget_usdc * 1_000_000))
+          : defaultPerHireCap;
+      const effectiveMaxAtomic = (requestedMaxAtomic < jobBudget ? requestedMaxAtomic : jobBudget).toString();
+      const fallbackHandles = Array.isArray(rawArgs.fallback_handles)
+        ? rawArgs.fallback_handles.map((x) => String(x).trim()).filter(Boolean)
+        : undefined;
+      const fallbackQuery =
+        typeof rawArgs.fallback_query === "string" ? rawArgs.fallback_query.trim() : undefined;
+      const payerAccountId = (ctx.nearAccountId || process.env.NEAR_ACCOUNT_ID || "").trim();
+      const payerPrivateKey = (ctx.nearPrivateKey || process.env.NEAR_PRIVATE_KEY || "").trim();
+
+      const failoverRes = await hireBestMarketAgentWithFailover({
+        primaryHandle: handle,
+        fallbackHandles,
+        query: fallbackQuery,
+        prompt: taskPrompt,
+        jobId: ctx.jobId || "0x" + "00".repeat(32),
+        maxBudgetAtomic: effectiveMaxAtomic,
+        payerAccountId,
+        payerPrivateKey,
+        nearRpcUrl: ctx.nearRpcUrl,
+        fetchImpl: ctx.fetchImpl,
+        policyEngine: ctx.spendingPolicy,
+        delegateSigner: ctx.x402DelegateSigner,
+        onTrace: ctx.onTrace,
+      });
+
+      if (failoverRes.ok && failoverRes.result) {
+        const res = failoverRes.result;
+        return {
+          ok: true,
+          output: `NEAR AI Market Hire Completed (@${res.handle}, task=${res.taskId}, paid=$${res.paidAmountUsdc} USDC via x402):\n\n${res.outputText}${res.artifactUrls.length ? `\n\nArtifacts:\n${res.artifactUrls.join("\n")}` : ""}`,
+          summary: `x402 hired @${res.handle} ($${res.paidAmountUsdc})`,
+        };
+      }
+
+      return {
+        ok: false,
+        output: `MARKETPLACE_FALLBACK_TO_NATIVE_AI: ${failoverRes.error || "Marketplace agent unavailable."}\nDo NOT retry marketplace hires or fail the job. Immediately complete the full task using SnowMoon's native NEAR AI Cloud + github_* + near_rpc_view tools and deliver the complete report.`,
+        summary: `marketplace failover -> native AI`,
       };
     }
 

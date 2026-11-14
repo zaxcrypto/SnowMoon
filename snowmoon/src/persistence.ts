@@ -12,6 +12,7 @@ export interface PersistedSnowMoonData {
   verifications: Record<string, unknown>[];
   settlements: Record<string, unknown>[];
   walletChallenges?: Record<string, unknown>[];
+  spendingPolicy?: Record<string, unknown>[];
   updatedAt: string;
 }
 
@@ -27,6 +28,7 @@ const EMPTY_DATA: PersistedSnowMoonData = {
   verifications: [],
   settlements: [],
   walletChallenges: [],
+  spendingPolicy: [],
   updatedAt: new Date(0).toISOString(),
 };
 
@@ -137,6 +139,7 @@ export class JsonFileDatabaseAdapter implements DatabaseAdapter {
         verifications: Array.isArray(parsed.verifications) ? parsed.verifications : [],
         settlements: Array.isArray(parsed.settlements) ? parsed.settlements : [],
         walletChallenges: Array.isArray(parsed.walletChallenges) ? parsed.walletChallenges : [],
+        spendingPolicy: Array.isArray(parsed.spendingPolicy) ? parsed.spendingPolicy : [],
         updatedAt: parsed.updatedAt || new Date().toISOString(),
       };
     } catch {
@@ -187,7 +190,7 @@ interface RowTableMeta {
   toColumns: (rec: Record<string, unknown>, nowIso: string) => Record<string, unknown>;
 }
 
-const ROW_TABLE_CONFIG: Record<CollectionKey, RowTableMeta> = {
+const ROW_TABLE_CONFIG: Partial<Record<CollectionKey, RowTableMeta>> = {
   customers: {
     table: "snowmoon_customers",
     pkCol: "account_id",
@@ -510,6 +513,7 @@ export class SupabaseDatabaseAdapter implements DatabaseAdapter {
 
   private async syncRowLevelCollection<T>(key: CollectionKey, items: T[]): Promise<void> {
     const meta = ROW_TABLE_CONFIG[key];
+    if (!meta) return;
     const nowIso = new Date().toISOString();
     const records = items as unknown as Record<string, unknown>[];
 
@@ -619,6 +623,7 @@ export class SupabaseDatabaseAdapter implements DatabaseAdapter {
     const mismatches: Array<{ collection: CollectionKey; kvCount: number; rowCount: number; missingInRow: string[]; missingInKv: string[] }> = [];
     for (const key of Object.keys(ROW_TABLE_CONFIG) as CollectionKey[]) {
       const cfg = ROW_TABLE_CONFIG[key];
+      if (!cfg) continue;
       const kvResp = await this.fetchImpl(
         `${this.supabaseUrl}/rest/v1/snowmoon_kv_collections?collection_key=eq.${encodeURIComponent(key)}&select=payload`,
         { method: "GET", headers: this.headers() }
@@ -648,7 +653,7 @@ export class SupabaseDatabaseAdapter implements DatabaseAdapter {
 
   public async syncCollectionRemote<T>(key: CollectionKey, items: T[]): Promise<void> {
     assertNoSecretsInRecords(items);
-    if (this.rowMode === "row") {
+    if (this.rowMode === "row" && ROW_TABLE_CONFIG[key]) {
       try {
         await this.syncRowLevelCollection(key, items);
         this.dirtyCollections.delete(key);
@@ -775,6 +780,25 @@ export class SupabaseDatabaseAdapter implements DatabaseAdapter {
             }
           }
           this.cache.set(key, items);
+        }
+        const spResp = await this.fetchImpl(
+          `${this.supabaseUrl}/rest/v1/snowmoon_kv_collections?collection_key=eq.spendingPolicy&select=*`,
+          { method: "GET", headers: this.headers("return=representation") }
+        );
+        if (spResp.ok) {
+          const spRows = (await spResp.json()) as Array<{
+            collection_key: CollectionKey;
+            payload: unknown[];
+            version?: number;
+          }>;
+          for (const row of spRows) {
+            if (row.collection_key === "spendingPolicy" && Array.isArray(row.payload)) {
+              this.cache.set("spendingPolicy", row.payload as Record<string, unknown>[]);
+              if (typeof row.version === "number") {
+                this.versions.set("spendingPolicy", row.version);
+              }
+            }
+          }
         }
         this.hydrated = true;
         return true;

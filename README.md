@@ -92,3 +92,4 @@ npm start
    - `WALLET_SESSION_SECRET`
    - `SUPABASE_URL` / `SUPABASE_SECRET_KEY` (if using Supabase persistence & storage)
    - `NEAR_AI_API_KEY` / `OUTLAYER_API_KEY` / `NEAR_INTENTS_1CLICK_API_KEY`
+

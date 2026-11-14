@@ -1949,6 +1949,48 @@
       <section id="view-approvals" class="view-section">
         <div class="card">
           <div class="card-head">
+            <span class="card-title">Spending Policy &amp; Limits</span>
+            <span class="provenance" id="sp-network-pill">near-mainnet · Native USDC</span>
+          </div>
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="sp-per-task">Per-Task Budget (USDC)</label>
+              <input id="sp-per-task" type="number" step="0.01" min="0" placeholder="5.00" />
+            </div>
+            <div class="form-group">
+              <label for="sp-per-tx">Per-Tx Limit (USDC)</label>
+              <input id="sp-per-tx" type="number" step="0.01" min="0" placeholder="2.00" />
+            </div>
+            <div class="form-group">
+              <label for="sp-daily">Daily Spend Limit (USDC)</label>
+              <input id="sp-daily" type="number" step="0.01" min="0" placeholder="20.00" />
+            </div>
+            <div class="form-group">
+              <label for="sp-job-total">Job Total Limit (USDC)</label>
+              <input id="sp-job-total" type="number" step="0.01" min="0" placeholder="10.00" />
+            </div>
+            <div class="form-group">
+              <label for="sp-human-threshold">Human Approval Threshold (USDC)</label>
+              <input id="sp-human-threshold" type="number" step="0.01" min="0" placeholder="0.10" />
+            </div>
+            <div class="form-group">
+              <label for="sp-merchants">Allowed Merchants (comma-separated)</label>
+              <input id="sp-merchants" type="text" placeholder="api.near.ai, outlayer.near, market.near.ai" />
+            </div>
+            <div class="form-group" style="grid-column: 1 / -1;">
+              <label for="sp-blocked">Blocked Categories (comma-separated)</label>
+              <input id="sp-blocked" type="text" placeholder="gambling, mixer, unverified-bridge, arbitrary-transfer" />
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:6px;">
+            <button class="btn btn-primary" onclick="saveSpendingPolicy()">Save Spending Limits</button>
+            <button class="btn" onclick="resetSpendingPolicy()">Reset Defaults</button>
+            <span id="sp-status-note" class="mono" style="font-size:11px;color:var(--text-3);"></span>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
             <span class="card-title">Spending Approval Queue</span>
             <span class="provenance">OutLayer Policy Gate (Authenticated &amp; Idempotent)</span>
           </div>
@@ -2909,6 +2951,24 @@
               ${a.status === "PENDING" ? `<button class="btn btn-sm btn-pos" onclick="decideApproval('${esc(a.approvalId)}', 'APPROVED')">Approve</button> <button class="btn btn-sm btn-neg" onclick="decideApproval('${esc(a.approvalId)}', 'REJECTED')">Reject</button>` : "Decided"}
             </td>
           </tr>`).join("");
+
+      const sp = latestState?.spendingPolicy;
+      if (sp) {
+        const spIds = ["sp-per-task", "sp-per-tx", "sp-daily", "sp-job-total", "sp-human-threshold", "sp-merchants", "sp-blocked"];
+        const isEditingPolicy = spIds.includes(document.activeElement?.id || "");
+        if (!isEditingPolicy) {
+          const toUsdcInput = (atomic) => (Number(atomic || 0) / 1_000_000).toFixed(2);
+          document.getElementById("sp-per-task").value = toUsdcInput(sp.perTaskBudgetAtomic);
+          document.getElementById("sp-per-tx").value = toUsdcInput(sp.perTxLimitAtomic);
+          document.getElementById("sp-daily").value = toUsdcInput(sp.dailyLimitAtomic);
+          document.getElementById("sp-job-total").value = toUsdcInput(sp.jobTotalLimitAtomic);
+          document.getElementById("sp-human-threshold").value = toUsdcInput(sp.humanApprovalThresholdAtomic);
+          document.getElementById("sp-merchants").value = Array.isArray(sp.allowedMerchants) ? sp.allowedMerchants.join(", ") : "";
+          document.getElementById("sp-blocked").value = Array.isArray(sp.blockedCategories) ? sp.blockedCategories.join(", ") : "";
+        }
+        const netLabel = Array.isArray(sp.allowedNetworks) ? sp.allowedNetworks.join(", ") : "near-mainnet";
+        document.getElementById("sp-network-pill").textContent = `${netLabel} · Native USDC`;
+      }
 
       // 5. Float
       if (acc) {
@@ -4013,6 +4073,67 @@
           await refreshAll();
         } catch (e) { showToast(e.message); }
       }, "Saving...");
+    }
+
+    function usdcToAtomicString(val, label) {
+      const n = Number(val);
+      if (!Number.isFinite(n) || n < 0) {
+        throw new Error(`${label} must be a valid non-negative USDC amount.`);
+      }
+      return String(Math.round(n * 1_000_000));
+    }
+
+    async function saveSpendingPolicy() {
+      return runBtnAction(null, async () => {
+        const noteEl = document.getElementById("sp-status-note");
+        try {
+          const payload = {
+            perTaskBudgetAtomic: usdcToAtomicString(document.getElementById("sp-per-task").value, "Per-Task Budget"),
+            perTxLimitAtomic: usdcToAtomicString(document.getElementById("sp-per-tx").value, "Per-Tx Limit"),
+            dailyLimitAtomic: usdcToAtomicString(document.getElementById("sp-daily").value, "Daily Spend Limit"),
+            jobTotalLimitAtomic: usdcToAtomicString(document.getElementById("sp-job-total").value, "Job Total Limit"),
+            humanApprovalThresholdAtomic: usdcToAtomicString(document.getElementById("sp-human-threshold").value, "Human Approval Threshold"),
+            allowedMerchants: document.getElementById("sp-merchants").value.split(",").map((s) => s.trim()).filter(Boolean),
+            blockedCategories: document.getElementById("sp-blocked").value.split(",").map((s) => s.trim()).filter(Boolean),
+            updatedBy: connectedAccountId || undefined,
+          };
+          const res = await apiFetch("/api/spending-policy", { method: "POST", body: JSON.stringify(payload) });
+          if (res?.state) {
+            latestState = res.state;
+            renderAll();
+          } else {
+            await refreshAll();
+          }
+          if (noteEl) noteEl.textContent = `Saved at ${new Date().toLocaleTimeString()}`;
+          showToast("Spending policy updated.");
+        } catch (e) {
+          if (noteEl) noteEl.textContent = e.message;
+          showToast(e.message);
+        }
+      }, "Saving...");
+    }
+
+    async function resetSpendingPolicy() {
+      return runBtnAction(null, async () => {
+        const noteEl = document.getElementById("sp-status-note");
+        try {
+          const res = await apiFetch("/api/spending-policy", {
+            method: "POST",
+            body: JSON.stringify({ resetDefaults: true, updatedBy: connectedAccountId || undefined }),
+          });
+          if (res?.state) {
+            latestState = res.state;
+            renderAll();
+          } else {
+            await refreshAll();
+          }
+          if (noteEl) noteEl.textContent = `Defaults restored at ${new Date().toLocaleTimeString()}`;
+          showToast("Spending policy reset to defaults.");
+        } catch (e) {
+          if (noteEl) noteEl.textContent = e.message;
+          showToast(e.message);
+        }
+      }, "Resetting...");
     }
 
     async function prepareLpTx(kind) {

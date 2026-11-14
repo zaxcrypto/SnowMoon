@@ -7,6 +7,7 @@ import {
 import { getCapabilitySystemRules, normalizeCapability } from "./capability_rules.ts";
 import type { SnowMoonConfig } from "./config.ts";
 import { emitLiveTrace } from "./live_trace.ts";
+import { DeterministicSpendingPolicyEngine } from "./spending_policy.ts";
 import {
   type AIExecutionRecord,
   type AITokenUsage,
@@ -470,10 +471,20 @@ export class OutLayerPolicyAdapter {
 export class AIWorkerAdapter {
   private config: SnowMoonConfig;
   private fetchImpl: typeof fetch;
+  private spendingPolicy: DeterministicSpendingPolicyEngine;
 
-  constructor(config: SnowMoonConfig, fetchImpl: typeof fetch = fetch) {
+  constructor(
+    config: SnowMoonConfig,
+    fetchImpl: typeof fetch = fetch,
+    spendingPolicy?: DeterministicSpendingPolicyEngine
+  ) {
     this.config = config;
     this.fetchImpl = fetchImpl;
+    this.spendingPolicy =
+      spendingPolicy ??
+      new DeterministicSpendingPolicyEngine({
+        humanApprovalThresholdAtomic: config.autoApproveLimitUsdc.toString(),
+      });
   }
 
   public getAdapterLabel(): string {
@@ -624,7 +635,7 @@ export class AIWorkerAdapter {
           const systemPrompt = [
             "You are SnowMoon Autonomous AI Worker running on NEAR Protocol & NEAR AI Cloud.",
             `Current UTC Date/Time: ${new Date().toISOString()}`,
-            "You have real-time tools: `web_search`, `fetch_url`, `github_repo_tree`, `github_read_file`, `github_search_code`, `near_rpc_view`, and `near_docs_search`.",
+            "You have real-time tools: `web_search`, `fetch_url`, `github_repo_tree`, `github_read_file`, `github_search_code`, `near_rpc_view`, `near_docs_search`, `discover_near_market_agents`, and `hire_near_market_agent`.",
             "CRITICAL RULES:",
             "1. NEVER guess or fabricate current prices, market caps, news, file contents, or vulnerability findings from memory. Always call your tools first to verify live data or actual repository source code.",
             "2. For GitHub repository audits, ALWAYS start with `github_repo_tree`, then read the key source files with `github_read_file` / `github_search_code`, and cite exact file paths, line numbers, and concrete remediation steps.",
@@ -727,6 +738,7 @@ export class AIWorkerAdapter {
           let resolvedModel = activeModel;
           let rawContent = "";
           const toolTrace: ToolCallTraceEntry[] = [];
+          const jobSpendingPolicy = this.spendingPolicy;
           const toolCache = new Map<string, { ok: boolean; output: string; summary: string }>();
 
           for (let modelIdx = 0; modelIdx < candidateModels.length; modelIdx++) {
@@ -805,6 +817,24 @@ export class AIWorkerAdapter {
                           fetchImpl: this.fetchImpl,
                           nearRpcUrl: this.config.nearMainnetRpcUrl,
                           githubToken: process.env.GITHUB_TOKEN,
+                          jobId: job.jobId,
+                          jobBudgetAtomic: job.maxOperatingBudget || job.customerPayment,
+                          spendingPolicy: jobSpendingPolicy,
+                          nearAccountId:
+                            process.env.NEAR_ACCOUNT_ID ||
+                            this.config.operatorAccountId ||
+                            this.config.mainnetOperatorAccountId,
+                          nearPrivateKey:
+                            process.env.NEAR_PRIVATE_KEY ||
+                            this.config.secrets.operatorPrivateKey,
+                          onTrace: (evt) =>
+                            emitLiveTrace({
+                              jobId: job.jobId,
+                              stage: "tool",
+                              status: evt.status === "ok" ? "ok" : evt.status === "error" ? "error" : "running",
+                              title: evt.title,
+                              detail: evt.detail,
+                            }),
                         });
                     if (!isCachedHit) toolCache.set(cacheKey, toolRes);
                     const durationMs = Math.max(1, Date.now() - t0);

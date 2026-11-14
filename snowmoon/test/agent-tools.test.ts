@@ -1,33 +1,55 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { isSafePublicHttpUrl, selectModelForTask } from "../src/agent_tools.ts";
+import { getCapabilitySystemRules } from "../src/capability_rules.ts";
 import { AIWorkerAdapter } from "../src/adapters.ts";
 import { loadConfig } from "../src/config.ts";
 import type { JobRecord } from "../src/engine.ts";
 
 test("selectModelForTask routes security audits, code, research, and fast tasks by capability & budget", () => {
+  // Enterprise ($25+): flagship Opus 4.7
   const enterpriseAudit = selectModelForTask({
     capability: "audit",
     prompt: "Audit https://github.com/example/contract for reentrancy and access control vulnerabilities",
-    amountAtomic: "5000000",
+    amountAtomic: "25000000",
   });
   assert.equal(enterpriseAudit.tier, "tier3_audit");
   assert.equal(enterpriseAudit.primaryModel, "anthropic/claude-opus-4-7");
-  assert.equal(enterpriseAudit.criticModel, "deepseek/deepseek-v3.2");
+  assert.equal(enterpriseAudit.criticModel, "anthropic/claude-sonnet-4-6");
 
-  const lowBudgetAudit = selectModelForTask({
+  // Growth ($5-$24.99, e.g. $10 USDC): Sonnet 4.6 sweet spot (neither lite nor Opus burn)
+  const growthAudit = selectModelForTask({
+    capability: "audit",
+    prompt: "Audit https://github.com/example/contract for reentrancy and access control vulnerabilities",
+    amountAtomic: "10000000",
+  });
+  assert.equal(growthAudit.tier, "tier3_audit");
+  assert.equal(growthAudit.primaryModel, "anthropic/claude-sonnet-4-6");
+  assert.equal(growthAudit.criticModel, "deepseek/deepseek-v3.2");
+
+  // Standard ($0.10-$0.99): DeepSeek v3.2
+  const standardAudit = selectModelForTask({
     capability: "security-audit",
     prompt: "Audit https://github.com/example/contract for vulnerabilities",
-    amountAtomic: "50000",
+    amountAtomic: "100000",
   });
-  assert.equal(lowBudgetAudit.tier, "tier3_audit");
-  assert.equal(lowBudgetAudit.primaryModel, "deepseek/deepseek-v3.2");
-  assert.equal(lowBudgetAudit.criticModel, undefined);
+  assert.equal(standardAudit.tier, "tier3_audit");
+  assert.equal(standardAudit.primaryModel, "deepseek/deepseek-v3.2");
+  assert.equal(standardAudit.criticModel, undefined);
+
+  // Micro ($0.01): Gemini 2.5 Flash-Lite (loss-proof)
+  const microAudit = selectModelForTask({
+    capability: "security-audit",
+    prompt: "Audit https://github.com/example/contract for vulnerabilities",
+    amountAtomic: "10000",
+  });
+  assert.equal(microAudit.tier, "tier3_audit");
+  assert.equal(microAudit.primaryModel, "google/gemini-2.5-flash-lite");
 
   const codePlan = selectModelForTask({
     capability: "code-review",
     prompt: "Review https://github.com/example/app TypeScript architecture",
-    amountAtomic: "20000",
+    amountAtomic: "100000",
   });
   assert.equal(codePlan.tier, "tier2_code");
   assert.equal(codePlan.primaryModel, "deepseek/deepseek-v3.2");
@@ -35,7 +57,7 @@ test("selectModelForTask routes security audits, code, research, and fast tasks 
   const researchPlan = selectModelForTask({
     capability: "research",
     prompt: "Find today's top 10 cryptocurrencies by live market cap",
-    amountAtomic: "10000",
+    amountAtomic: "100000",
   });
   assert.equal(researchPlan.tier, "tier2_research");
   assert.equal(researchPlan.primaryModel, "deepseek/deepseek-v3.2");
@@ -155,4 +177,29 @@ test("AIWorkerAdapter executes multi-turn tool_calls loop and accumulates token 
   assert.match(res.deliverableMarkdown, /Agentic Tools Executed \(1\)/);
   assert.match(res.deliverableMarkdown, /fetch_url/);
   assert.match(res.deliverableMarkdown, /BTC \$91,000/);
+});
+
+test("all 6 capabilities have isolated rules and code-review is never hijacked by audit keywords", () => {
+  const caps = [
+    "security-audit",
+    "code-review",
+    "research",
+    "analysis",
+    "summarization",
+    "data-extraction",
+  ];
+  const seen = new Set<string>();
+  for (const cap of caps) {
+    const rules = getCapabilitySystemRules(cap);
+    assert.ok(rules && rules.length > 100, `Expected non-empty rules for ${cap}`);
+    assert.ok(!seen.has(rules), `Expected distinct rules for ${cap}`);
+    seen.add(rules);
+  }
+
+  const codeReviewWithAuditWords = selectModelForTask({
+    capability: "code-review",
+    prompt: "Review this smart contract for bugs and clean architecture",
+    amountAtomic: "1000000",
+  });
+  assert.equal(codeReviewWithAuditWords.tier, "tier2_code");
 });

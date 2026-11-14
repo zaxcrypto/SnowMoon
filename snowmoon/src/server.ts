@@ -30,7 +30,11 @@ import { NearIntentsClient } from "./near_intents.ts";
 import { FloatPoolAdvanceOrchestrator } from "./float_pool.ts";
 import { DeliverableVault, LocalPrivateObjectStorage } from "./deliverables.ts";
 import { MonitoringService } from "./monitoring.ts";
-import { DeterministicSpendingPolicyEngine } from "./spending_policy.ts";
+import {
+  DEFAULT_SPENDING_POLICY,
+  DeterministicSpendingPolicyEngine,
+  type SpendingPolicyConfig,
+} from "./spending_policy.ts";
 import { NearAiBrainOrchestrator } from "./brain_audit.ts";
 import { emitLiveTrace, liveTraceBus, type LiveTraceEvent } from "./live_trace.ts";
 
@@ -119,6 +123,7 @@ export const PRODUCTION_ROUTE_POLICY = {
       "/api/outlayer/poll",
       "/api/outlayer/verify-attestation",
       "/api/approvals/decide",
+      "/api/spending-policy",
     ],
     workerBearerAuthenticated: [
       "/api/workforce/workers/availability",
@@ -247,7 +252,8 @@ export function buildSystemSnapshot(
   policyAdapter: OutLayerPolicyAdapter,
   aiAdapter: AIWorkerAdapter,
   nearRpcAdapter?: NearMainnetRpcAdapter,
-  verificationEngine?: VerificationEngine
+  verificationEngine?: VerificationEngine,
+  spendingPolicy?: DeterministicSpendingPolicyEngine
 ) {
   const jobs = Array.from(engine.jobs.values()).sort((a, b) => b.seq - a.seq);
   const advances = Array.from(engine.advances.values()).sort(
@@ -358,6 +364,7 @@ export function buildSystemSnapshot(
     jobs,
     advances,
     approvals,
+    spendingPolicy: spendingPolicy ? spendingPolicy.getConfig() : DEFAULT_SPENDING_POLICY,
     anchors,
     verifications: verificationEngine ? verificationEngine.listSubmissions() : [],
     events: engine.events.slice(0, 60),
@@ -374,7 +381,10 @@ export function createSnowMoonApp(
   const config = customConfig ?? loadConfig();
   const engine = new SnowMoonEngine(config);
   const policyAdapter = new OutLayerPolicyAdapter(config, engine);
-  const aiAdapter = new AIWorkerAdapter(config);
+  const spendingPolicy = new DeterministicSpendingPolicyEngine({
+    humanApprovalThresholdAtomic: config.autoApproveLimitUsdc.toString(),
+  });
+  const aiAdapter = new AIWorkerAdapter(config, fetch, spendingPolicy);
   const nearRpcAdapter = new NearMainnetRpcAdapter(config);
   const walletSessionSecret = config.isProductionMode
     ? (config.secrets.walletSessionSecret || process.env.WALLET_SESSION_SECRET || "").trim()
@@ -420,7 +430,25 @@ export function createSnowMoonApp(
           walletSessionSecret || "snowmoon-dev-deliverable-secret"
         );
   const monitoring = new MonitoringService();
-  const spendingPolicy = new DeterministicSpendingPolicyEngine();
+  const applyPersistedSpendingPolicy = (): void => {
+    const saved = repo.getCollection<Record<string, unknown>>("spendingPolicy");
+    const row = saved[0];
+    if (!row) return;
+    spendingPolicy.updateConfig({
+      perTaskBudgetAtomic: row.perTaskBudgetAtomic as string | undefined,
+      perTxLimitAtomic: row.perTxLimitAtomic as string | undefined,
+      dailyLimitAtomic: row.dailyLimitAtomic as string | undefined,
+      jobTotalLimitAtomic: row.jobTotalLimitAtomic as string | undefined,
+      humanApprovalThresholdAtomic: row.humanApprovalThresholdAtomic as string | undefined,
+      allowedMerchants: Array.isArray(row.allowedMerchants)
+        ? (row.allowedMerchants as string[])
+        : undefined,
+      blockedCategories: Array.isArray(row.blockedCategories)
+        ? (row.blockedCategories as string[])
+        : undefined,
+    });
+  };
+  applyPersistedSpendingPolicy();
   const brainOrchestrator = new NearAiBrainOrchestrator();
   const nearRateBuckets = new Map<string, number[]>();
   const startedAtMs = Date.now();
@@ -439,6 +467,7 @@ export function createSnowMoonApp(
           workforceEngine.reloadFromRepo();
           verificationEngine.reloadFromRepo();
           settlementEngine.reloadFromRepo();
+          applyPersistedSpendingPolicy();
         }
         enginesHydrated = true;
       })().finally(() => {
@@ -697,7 +726,15 @@ export function createSnowMoonApp(
         sendJson(
           res,
           200,
-          buildSystemSnapshot(config, engine, policyAdapter, aiAdapter, nearRpcAdapter, verificationEngine)
+          buildSystemSnapshot(
+            config,
+            engine,
+            policyAdapter,
+            aiAdapter,
+            nearRpcAdapter,
+            verificationEngine,
+            spendingPolicy
+          )
         );
         return;
       }
@@ -2591,7 +2628,15 @@ export function createSnowMoonApp(
         sendJson(res, 200, {
           ok: true,
           result,
-          state: buildSystemSnapshot(config, engine, policyAdapter, aiAdapter),
+          state: buildSystemSnapshot(
+            config,
+            engine,
+            policyAdapter,
+            aiAdapter,
+            nearRpcAdapter,
+            verificationEngine,
+            spendingPolicy
+          ),
         });
         return;
       }
@@ -2645,7 +2690,15 @@ export function createSnowMoonApp(
         sendJson(res, 200, {
           ok: true,
           result,
-          state: buildSystemSnapshot(config, engine, policyAdapter, aiAdapter),
+          state: buildSystemSnapshot(
+            config,
+            engine,
+            policyAdapter,
+            aiAdapter,
+            nearRpcAdapter,
+            verificationEngine,
+            spendingPolicy
+          ),
         });
         return;
       }
@@ -2687,7 +2740,100 @@ export function createSnowMoonApp(
         sendJson(res, 200, {
           ok: true,
           result,
-          state: buildSystemSnapshot(config, engine, policyAdapter, aiAdapter),
+          state: buildSystemSnapshot(
+            config,
+            engine,
+            policyAdapter,
+            aiAdapter,
+            nearRpcAdapter,
+            verificationEngine,
+            spendingPolicy
+          ),
+        });
+        return;
+      }
+
+      // 9b. Read or update deterministic Spending Policy limits (Approvals dashboard)
+      if (method === "GET" && pathname === "/api/spending-policy") {
+        sendJson(res, 200, {
+          ok: true,
+          policy: spendingPolicy.getConfig(),
+        });
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/spending-policy") {
+        const body = await readJsonBody(req);
+        const updatedBy = String(
+          body.updatedBy ||
+            (config.isProductionMode ? config.mainnetAdminAccountId : config.operatorAccountId)
+        );
+        const walletToken =
+          typeof req.headers["x-wallet-session"] === "string"
+            ? req.headers["x-wallet-session"]
+            : undefined;
+        walletSessionManager.assertAuthorizedCustomer(walletToken, updatedBy);
+        if (config.isProductionMode) {
+          if (
+            updatedBy !== config.mainnetAdminAccountId &&
+            updatedBy !== config.mainnetAuditOperatorAccountId
+          ) {
+            throw new Error(
+              `ERR_NOT_OPERATOR_AUTHORITY: Only authorized operator (${config.mainnetAdminAccountId}) can update spending policy in production.`
+            );
+          }
+        }
+        const patch: Partial<SpendingPolicyConfig> =
+          body.resetDefaults === true
+            ? {
+                ...DEFAULT_SPENDING_POLICY,
+                humanApprovalThresholdAtomic: config.autoApproveLimitUsdc.toString(),
+              }
+            : {
+                perTaskBudgetAtomic:
+                  body.perTaskBudgetAtomic !== undefined
+                    ? String(body.perTaskBudgetAtomic)
+                    : undefined,
+                perTxLimitAtomic:
+                  body.perTxLimitAtomic !== undefined ? String(body.perTxLimitAtomic) : undefined,
+                dailyLimitAtomic:
+                  body.dailyLimitAtomic !== undefined ? String(body.dailyLimitAtomic) : undefined,
+                jobTotalLimitAtomic:
+                  body.jobTotalLimitAtomic !== undefined
+                    ? String(body.jobTotalLimitAtomic)
+                    : undefined,
+                humanApprovalThresholdAtomic:
+                  body.humanApprovalThresholdAtomic !== undefined
+                    ? String(body.humanApprovalThresholdAtomic)
+                    : undefined,
+                allowedMerchants: Array.isArray(body.allowedMerchants)
+                  ? body.allowedMerchants.map((item) => String(item))
+                  : undefined,
+                blockedCategories: Array.isArray(body.blockedCategories)
+                  ? body.blockedCategories.map((item) => String(item))
+                  : undefined,
+              };
+        const updated = spendingPolicy.updateConfig(patch);
+        await repo.saveCollectionAsync("spendingPolicy", [
+          {
+            id: "default",
+            ...updated,
+            updatedBy,
+            updatedAt: new Date().toISOString(),
+          },
+        ]);
+        sendJson(res, 200, {
+          ok: true,
+          policy: updated,
+          state: buildSystemSnapshot(
+            config,
+            engine,
+            policyAdapter,
+            aiAdapter,
+            nearRpcAdapter,
+            verificationEngine,
+            spendingPolicy
+          ),
         });
         return;
       }

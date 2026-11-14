@@ -290,7 +290,9 @@ export function loadConfig(envOverrides?: Record<string, string | undefined>): S
     customerAccountId:
       env.SNOWMOON_CUSTOMER_ACCOUNT_ID || "customer.snowmoon.test.near",
     operatorAccountId:
-      env.SNOWMOON_OPERATOR_ACCOUNT_ID || "operator.snowmoon.test.near",
+      env.SNOWMOON_OPERATOR_ACCOUNT_ID ||
+      env.NEAR_ACCOUNT_ID ||
+      "operator.snowmoon.test.near",
     lpAccountId:
       env.SNOWMOON_LP_ACCOUNT_ID || "lp.snowmoon.test.near",
     liveTxBroadcastingEnabled: false, // Hard-locked disabled until deployment, wallet auth, and tx simulation are verified
@@ -353,7 +355,11 @@ export function loadConfig(envOverrides?: Record<string, string | undefined>): S
       oneClickApiKey: (env.NEAR_INTENTS_1CLICK_API_KEY || "").trim(),
       supabaseSecretKey: (env.SUPABASE_SECRET_KEY || "").trim(),
       walletSessionSecret: (env.WALLET_SESSION_SECRET || "").trim(),
-      operatorPrivateKey: (env.SNOWMOON_OPERATOR_PRIVATE_KEY || "").trim(),
+      operatorPrivateKey: (
+        env.SNOWMOON_OPERATOR_PRIVATE_KEY ||
+        env.NEAR_PRIVATE_KEY ||
+        ""
+      ).trim(),
       adminPrivateKey: (env.SNOWMOON_ADMIN_PRIVATE_KEY || "").trim(),
     },
   };
