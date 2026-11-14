@@ -35,7 +35,15 @@
 
 ### 3. Capability-Scoped Agentic Execution (`AIWorkerAdapter`)
 When execution starts, SnowMoon runs a multi-stage autonomous pipeline streamed live into the dashboard terminal:
-- **Budget-Proportional Dynamic Model Routing (`selectModelForTask`):** Selects the right model tier proportionally to the job's USDC budget and capability (e.g., `deepseek/deepseek-v3.2`, `gemini-2.5-flash` fallback) without over- or under-spending.
+- **Budget-Proportional Dynamic Model Routing (`selectModelForTask`):** Routes across **5 USDC budget bands** so micro-tasks stay fast & loss-proof while high-value audits get flagship reasoning + critic verification:
+
+  | Budget Band | USDC Range | Example Model (`security-audit`) |
+  | --- | --- | --- |
+  | **Micro** | `< $0.10` | `google/gemini-2.5-flash-lite` |
+  | **Standard** | `$0.10 – $0.99` | `deepseek/deepseek-v3.2` *(fallback `google/gemini-2.5-flash`)* |
+  | **Pro** | `$1.00 – $4.99` | `google/gemini-2.5-pro` |
+  | **Growth** | `$5.00 – $24.99` | `anthropic/claude-sonnet-4-6` *(+ critic pass)* |
+  | **Enterprise** | `>= $25.00` | `anthropic/claude-opus-4-7` *(+ critic pass)* |
 - **6 Isolated Capability Rule Profiles (`snowmoon/src/capability_rules.ts`):** Strict, non-overlapping protocols for:
   - `security-audit` — 5-point smart contract & backend checklist, GitHub AST/file inspection, mandatory live `near_rpc_view` citation, and x402 specialist verification.
   - `code-review` — architecture, correctness, edge cases, performance, and test coverage review.
@@ -57,7 +65,9 @@ When execution starts, SnowMoon runs a multi-stage autonomous pipeline streamed 
 - **Reject & Refund:** Clicking **Reject** opens a slide-up rejection reason drawer, marks the deliverable `REJECTED_LOCKED`, and enables deterministic customer **Refund (Wallet)**.
 
 ### 6. FloatVault (`FloatPool`) & Spending Policy
-- **FloatPool (`core.cryptozax.near`):** Built-in USDC working-capital liquidity vault. LPs deposit USDC to earn yield, operators draw bounded advances against active escrowed jobs to cover x402 marketplace hires/compute, and `FloatPool` is repaid **first** (`principal + fee`) on settlement.
+- **FloatPool (`core.cryptozax.near`):** Built-in USDC working-capital liquidity vault. LPs deposit USDC to earn yield, operators draw bounded advances against active escrowed jobs to cover x402 marketplace hires/compute, and on settlement `FloatPool` uses a **priority repayment waterfall**:
+  1. `FloatPool` is repaid **first** (`borrowed principal + LP yield fee`, e.g. `2.00%`).
+  2. Remaining `operator_net` goes to the worker/operator (`0%` extra SnowMoon platform fee).
 - **Spending Policy (`spending_policy.ts` & Approvals Tab):** Enforces configurable autonomous micro-spend limits (e.g., `<= $0.10` USDC auto-approve), human escalation above limit, per-job budget caps, and post-approval substitution guards.
 
 ---
