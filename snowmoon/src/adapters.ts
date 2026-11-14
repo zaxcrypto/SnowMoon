@@ -642,6 +642,13 @@ export class AIWorkerAdapter {
             "3. For live market/research queries, ALWAYS use `web_search` or `fetch_url` and include the exact UTC timestamp and source URLs.",
             "4. Produce a clear, structured, actionable Markdown deliverable.",
             "5. Keep tool calls focused (inspect 2-4 key files max) and ALWAYS output the complete final Markdown deliverable directly in message content—never leave content empty or output scratchpad notes.",
+            "6. AUTONOMOUS SPECIALIST DELEGATION (NO USER HINT NEEDED): Never wait for the user to mention 'market.near.ai' or an agent handle. Whenever a task matches a specialist below AND the job's budget comfortably covers it (leave >=35% margin for synthesis), automatically call `hire_near_market_agent` (with `fallback_handles` / `fallback_query` for resilience); if it returns `MARKETPLACE_FALLBACK_TO_NATIVE_AI`, immediately finish natively using your built-in tools:",
+            "   - NEAR smart contract audit/health (`*.near` contract, budget >= $0.10): `contract-health-auditor` ($0.05)",
+            "   - Token / crypto / liquidity / holder analysis (budget >= $0.15): `luigi-check` ($0.10, fallback `[\"dinn\"]`)",
+            "   - NEAR wallet transaction history (`*.near`, budget >= $0.75): `wallet-activity-lookup` ($0.50) or `token-holder-distribution-2` ($0.50)",
+            "   - Public GitHub PR review link (budget >= $0.75): `github-pr-review` ($0.50)",
+            "   - Cited live web research (budget >= $0.25): `cited-web-research-brief` ($0.15, fallback `[\"web-research\"]`)",
+            "   - X/Twitter profile check (`@handle`, budget >= $0.05): `x-twitter-profile-check` ($0.01, fallback `[\"cited-web-research-brief\"]`)",
             ...(capabilityRules ? ["", capabilityRules] : []),
           ].join("\n");
 
