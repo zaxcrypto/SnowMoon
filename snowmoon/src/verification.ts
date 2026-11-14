@@ -69,11 +69,15 @@ export class VerificationEngine {
 
   constructor(repo?: SnowMoonRepository) {
     this.repo = repo;
-    if (this.repo) {
-      const saved = this.repo.getCollection<DeliverySubmissionRecord>("verifications");
-      if (saved.length > 0) {
-        this.restoreSubmissions(saved);
-      }
+    this.reloadFromRepo();
+  }
+
+  public reloadFromRepo(): void {
+    if (!this.repo) return;
+    this.submissions.clear();
+    const saved = this.repo.getCollection<DeliverySubmissionRecord>("verifications");
+    if (saved.length > 0) {
+      this.restoreSubmissions(saved);
     }
   }
 

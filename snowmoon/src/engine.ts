@@ -226,7 +226,9 @@ export class SnowMoonEngine {
 
   constructor(config: SnowMoonConfig) {
     this.config = config;
-    this.seedInitialState();
+    if (!config.isProductionMode && config.network === "sandbox" && config.chainMode === "sandbox") {
+      this.seedInitialState();
+    }
   }
 
   public seedInitialState(): void {

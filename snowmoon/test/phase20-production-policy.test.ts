@@ -16,6 +16,7 @@ test("42. Phase 20.1 Production route policy: allowlist, denylist, FloatPool/Vau
     SNOWMOON_PORT: "0",
     SNOWMOON_NETWORK: "mainnet",
     SNOWMOON_CHAIN_MODE: "rpc",
+    WALLET_SESSION_SECRET: "test-phase20-secret",
     SNOWMOON_STATE_FILE: path.join(dir, "state.json"),
     SNOWMOON_PERSISTENCE_FILE: path.join(dir, "db.json"),
   });

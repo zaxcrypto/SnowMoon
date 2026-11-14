@@ -13,6 +13,34 @@ import type { VerificationStatus } from "./verification.ts";
 
 export type SettlementKind = "PAYOUT_ACCEPT_DELIVERY" | "CUSTOMER_REFUND";
 
+export type RefundReason =
+  | "CUSTOMER_REJECTED"
+  | "NO_DELIVERY_EXPIRED"
+  | "WORKER_FAILED"
+  | "DISPUTE_RESOLVED";
+
+export interface FinancialDestinationEntry {
+  from: string;
+  to: string;
+  tokenContract: string;
+  amountAtomic: string;
+  purpose: string;
+}
+
+export interface FinancialDestinationAudit {
+  tokenContract: string;
+  grossEscrowAtomic: string;
+  floatPrincipalRepaidAtomic: string;
+  floatFeeAtomic: string;
+  reserveCutAtomic: string;
+  lpYieldAtomic: string;
+  operatorNetAtomic: string;
+  platformFeeAtomic: string;
+  customerRefundAtomic: string;
+  writeOffLossAtomic: string;
+  destinations: FinancialDestinationEntry[];
+}
+
 export type SettlementStatus =
   | "PREPARED"
   | "PENDING"
@@ -25,6 +53,7 @@ export interface SettlementRecord {
   idempotencyKey?: string;
   jobId: string;
   kind: SettlementKind;
+  refundReason?: RefundReason;
   customerAccountId: string;
   workerAccountId: string;
   coreContractId: string;
@@ -32,6 +61,7 @@ export interface SettlementRecord {
   platformFeeBps: number;
   platformFeeAtomic: string;
   workerPayoutAtomic: string;
+  financialAudit?: FinancialDestinationAudit;
   status: SettlementStatus;
   txHash: string | null;
   onChainConfirmed: boolean;
@@ -52,6 +82,131 @@ export interface PaymentHistoryEntry {
   txHash: string | null;
   onChainConfirmed: boolean;
   timestamp: string;
+}
+
+export const MAX_JOB_DURATION_SEC = 90 * 24 * 60 * 60;
+
+export function validateJobDeadlineSeconds(
+  deadlineSec: number,
+  nowSec = Math.floor(Date.now() / 1000)
+): number {
+  if (!Number.isInteger(deadlineSec) || deadlineSec <= 0) {
+    throw new Error(`ERR_INVALID_DEADLINE: deadline must be positive integer seconds, got ${deadlineSec}.`);
+  }
+  if (deadlineSec > 1_000_000_000_000) {
+    throw new Error(
+      `ERR_DEADLINE_MILLISECONDS_REJECTED: deadline ${deadlineSec} appears to be milliseconds; seconds required.`
+    );
+  }
+  if (deadlineSec <= nowSec) {
+    throw new Error(`ERR_DEADLINE_EXPIRED: deadline ${deadlineSec} <= now ${nowSec}.`);
+  }
+  if (deadlineSec > nowSec + MAX_JOB_DURATION_SEC) {
+    throw new Error(
+      `ERR_DEADLINE_TOO_FAR: deadline ${deadlineSec} exceeds max 90-day duration from ${nowSec}.`
+    );
+  }
+  return deadlineSec;
+}
+
+export function computeFinancialDestinationAudit(params: {
+  kind: SettlementKind;
+  tokenContract: string;
+  coreContractId: string;
+  customerAccountId: string;
+  operatorAccountId: string;
+  grossAmountAtomic: string;
+  floatPrincipalAtomic?: string;
+  floatFeeAtomic?: string;
+  platformFeeAtomic?: string;
+}): FinancialDestinationAudit {
+  const gross = parseU128DecimalString(params.grossAmountAtomic, "grossAmountAtomic", false);
+  const principal = BigInt(params.floatPrincipalAtomic || "0");
+  const fee = BigInt(params.floatFeeAtomic || "0");
+  const platformFee = BigInt(params.platformFeeAtomic || "0");
+  const destinations: FinancialDestinationEntry[] = [];
+
+  if (params.kind === "PAYOUT_ACCEPT_DELIVERY") {
+    const advanceRepaid = principal + fee;
+    if (advanceRepaid + platformFee > gross) {
+      throw new Error("ERR_ESCROW_UNDERFLOW: FloatPool repayment + platform fee exceeds gross escrow.");
+    }
+    const reserveCut = (fee * 2_000n) / 10_000n;
+    const lpYield = fee - reserveCut;
+    const operatorNet = gross - advanceRepaid - platformFee;
+    if (operatorNet <= 0n) {
+      throw new Error("ERR_ZERO_OPERATOR_NET: Operator net payout must be > 0.");
+    }
+    if (principal > 0n) {
+      destinations.push({
+        from: params.coreContractId,
+        to: `${params.coreContractId}#float_pool_principal`,
+        tokenContract: params.tokenContract,
+        amountAtomic: principal.toString(),
+        purpose: "Repay FloatPool advance principal",
+      });
+    }
+    if (reserveCut > 0n) {
+      destinations.push({
+        from: params.coreContractId,
+        to: `${params.coreContractId}#first_loss_reserve`,
+        tokenContract: params.tokenContract,
+        amountAtomic: reserveCut.toString(),
+        purpose: "20% of FloatPool advance fee to first-loss reserve",
+      });
+    }
+    if (lpYield > 0n) {
+      destinations.push({
+        from: params.coreContractId,
+        to: `${params.coreContractId}#lp_pool_yield`,
+        tokenContract: params.tokenContract,
+        amountAtomic: lpYield.toString(),
+        purpose: "80% of FloatPool advance fee to LP assets",
+      });
+    }
+    destinations.push({
+      from: params.coreContractId,
+      to: params.operatorAccountId,
+      tokenContract: params.tokenContract,
+      amountAtomic: operatorNet.toString(),
+      purpose: "Operator net settlement payout via ft_transfer",
+    });
+    return {
+      tokenContract: params.tokenContract,
+      grossEscrowAtomic: gross.toString(),
+      floatPrincipalRepaidAtomic: principal.toString(),
+      floatFeeAtomic: fee.toString(),
+      reserveCutAtomic: reserveCut.toString(),
+      lpYieldAtomic: lpYield.toString(),
+      operatorNetAtomic: operatorNet.toString(),
+      platformFeeAtomic: platformFee.toString(),
+      customerRefundAtomic: "0",
+      writeOffLossAtomic: "0",
+      destinations,
+    };
+  }
+
+  // CUSTOMER_REFUND: Customer receives 100% of gross escrow; any open FloatPool advance is written off via 3-stage loss waterfall.
+  destinations.push({
+    from: params.coreContractId,
+    to: params.customerAccountId,
+    tokenContract: params.tokenContract,
+    amountAtomic: gross.toString(),
+    purpose: "100% customer escrow refund via ft_transfer",
+  });
+  return {
+    tokenContract: params.tokenContract,
+    grossEscrowAtomic: gross.toString(),
+    floatPrincipalRepaidAtomic: "0",
+    floatFeeAtomic: "0",
+    reserveCutAtomic: "0",
+    lpYieldAtomic: "0",
+    operatorNetAtomic: "0",
+    platformFeeAtomic: "0",
+    customerRefundAtomic: gross.toString(),
+    writeOffLossAtomic: principal.toString(),
+    destinations,
+  };
 }
 
 export function calculateAtomicPayoutSplit(
@@ -87,16 +242,23 @@ export class SettlementEngine {
 
   constructor(repo?: SnowMoonRepository) {
     this.repo = repo;
-    if (repo) {
-      for (const rec of repo.getCollection<SettlementRecord>("settlements")) {
-        this.records.set(rec.settlementId, rec);
-        this.jobToSettlement.set(rec.jobId, rec.settlementId);
-        if (rec.txHash) {
-          this.txToSettlement.set(rec.txHash, rec.settlementId);
-        }
-        if (rec.status === "CONFIRMED" || rec.status === "FAILED" || rec.status === "FAILED_CALLBACK_RECOVERABLE") {
-          this.appendHistory(rec);
-        }
+    this.reloadFromRepo();
+  }
+
+  public reloadFromRepo(): void {
+    if (!this.repo) return;
+    this.records.clear();
+    this.jobToSettlement.clear();
+    this.txToSettlement.clear();
+    this.history.length = 0;
+    for (const rec of this.repo.getCollection<SettlementRecord>("settlements")) {
+      this.records.set(rec.settlementId, rec);
+      this.jobToSettlement.set(rec.jobId, rec.settlementId);
+      if (rec.txHash) {
+        this.txToSettlement.set(rec.txHash, rec.settlementId);
+      }
+      if (rec.status === "CONFIRMED" || rec.status === "FAILED" || rec.status === "FAILED_CALLBACK_RECOVERABLE") {
+        this.appendHistory(rec);
       }
     }
   }
@@ -208,6 +370,15 @@ export class SettlementEngine {
     };
 
     const now = new Date().toISOString();
+    const financialAudit = computeFinancialDestinationAudit({
+      kind: params.kind,
+      tokenContract: config.mainnetUsdcContractId,
+      coreContractId: coreId,
+      customerAccountId: customer,
+      operatorAccountId: worker,
+      grossAmountAtomic: split.grossAtomic,
+      platformFeeAtomic: split.platformFeeAtomic,
+    });
     const record: SettlementRecord = {
       settlementId,
       idempotencyKey,
@@ -221,6 +392,151 @@ export class SettlementEngine {
       platformFeeAtomic: split.platformFeeAtomic,
       workerPayoutAtomic:
         params.kind === "PAYOUT_ACCEPT_DELIVERY" ? split.workerPayoutAtomic : "0",
+      financialAudit,
+      status: "PREPARED",
+      txHash: null,
+      onChainConfirmed: false,
+      actionableError: null,
+      preparedTransaction,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    this.records.set(settlementId, record);
+    this.jobToSettlement.set(jobId, settlementId);
+    this.persist();
+    return record;
+  }
+
+  /**
+   * Independent refund preparation path (Task 7): does NOT require a delivery submission
+   * or fake delivery artifact. Supports no-delivery expiry, worker failure, customer rejection,
+   * and dispute resolution, and reconciles any open FloatPool advance write-off.
+   */
+  public prepareRefund(
+    config: SnowMoonConfig,
+    params: {
+      jobId: string;
+      refundReason: RefundReason;
+      jobState: string;
+      customerAccountId: string;
+      operatorAccountId: string;
+      grossAmountAtomic: string;
+      deadlineSec?: number;
+      nowSec?: number;
+      callerIsOperatorOrAdmin?: boolean;
+      floatPrincipalAtomic?: string;
+    }
+  ): SettlementRecord {
+    const jobId = normalizeHex32Lowercase(params.jobId, "jobId");
+    const customer = assertValidNearAccountId(params.customerAccountId, "customerAccountId");
+    const operator = assertValidNearAccountId(params.operatorAccountId, "operatorAccountId");
+    const gross = parseU128DecimalString(params.grossAmountAtomic, "grossAmountAtomic", false);
+
+    const refundableStates = new Set([
+      "FUNDED",
+      "ASSIGNED",
+      "EXECUTING",
+      "FAILED",
+      "EXPIRED",
+      "REJECTED",
+      "DISPUTED",
+      "DELIVERED",
+      "VERIFIED",
+    ]);
+    if (!refundableStates.has(params.jobState)) {
+      throw new Error(
+        `ERR_REFUND_INVALID_STATE: Cannot refund job ${jobId} in state ${params.jobState}.`
+      );
+    }
+
+    if (params.refundReason === "NO_DELIVERY_EXPIRED" && !params.callerIsOperatorOrAdmin) {
+      const nowSec = params.nowSec ?? Math.floor(Date.now() / 1000);
+      if (!params.deadlineSec || nowSec < params.deadlineSec) {
+        throw new Error(
+          `ERR_DEADLINE_NOT_REACHED: Customer refund before deadline (${params.deadlineSec ?? "unset"}) requires operator/admin authorization.`
+        );
+      }
+    }
+
+    const existingId = this.jobToSettlement.get(jobId);
+    const idempotencyKey = crypto
+      .createHash("sha256")
+      .update(`${jobId}|CUSTOMER_REFUND|${params.refundReason}|${customer}|${gross.toString()}`)
+      .digest("hex")
+      .slice(0, 24);
+    if (existingId) {
+      const existing = this.records.get(existingId);
+      if (existing && (existing.status === "CONFIRMED" || existing.status === "PENDING")) {
+        throw new Error(
+          `ERR_DUPLICATE_REFUND: Job ${jobId} already has settlement ${existing.settlementId} in status ${existing.status}.`
+        );
+      }
+      if (
+        existing &&
+        existing.status === "PREPARED" &&
+        existing.kind === "CUSTOMER_REFUND" &&
+        existing.idempotencyKey === idempotencyKey
+      ) {
+        return existing;
+      }
+      if (existing && existing.status === "PREPARED" && existing.kind === "PAYOUT_ACCEPT_DELIVERY") {
+        throw new Error(
+          `ERR_SETTLEMENT_CONFLICT: Job ${jobId} already has a prepared payout settlement.`
+        );
+      }
+    }
+
+    const coreId = config.mainnetCoreContractId;
+    const settlementId =
+      "stl_" +
+      crypto
+        .createHash("sha256")
+        .update(`${jobId}|CUSTOMER_REFUND|${Date.now()}`)
+        .digest("hex")
+        .slice(0, 16);
+
+    const preparedTransaction: PreparedNearTransaction = {
+      stepNumber: 1,
+      description: `Refund 100% escrow (${gross.toString()} atomic USDC) to ${customer} on ${coreId}::refund (${params.refundReason})`,
+      signerId: params.callerIsOperatorOrAdmin ? operator : customer,
+      receiverId: coreId,
+      actions: [
+        {
+          type: "FunctionCall",
+          methodName: "refund",
+          args: { job_id: jobId },
+          gas: "120000000000000",
+          depositYocto: "1",
+        },
+      ],
+    };
+
+    const financialAudit = computeFinancialDestinationAudit({
+      kind: "CUSTOMER_REFUND",
+      tokenContract: config.mainnetUsdcContractId,
+      coreContractId: coreId,
+      customerAccountId: customer,
+      operatorAccountId: operator,
+      grossAmountAtomic: gross.toString(),
+      floatPrincipalAtomic: params.floatPrincipalAtomic || "0",
+    });
+
+    const now = new Date().toISOString();
+    const record: SettlementRecord = {
+      settlementId,
+      idempotencyKey,
+      jobId,
+      kind: "CUSTOMER_REFUND",
+      refundReason: params.refundReason,
+      customerAccountId: customer,
+      workerAccountId: operator,
+      coreContractId: coreId,
+      grossAmountAtomic: gross.toString(),
+      platformFeeBps: 0,
+      platformFeeAtomic: "0",
+      workerPayoutAtomic: "0",
+      financialAudit,
       status: "PREPARED",
       txHash: null,
       onChainConfirmed: false,

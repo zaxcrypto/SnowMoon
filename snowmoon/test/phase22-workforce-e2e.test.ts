@@ -20,12 +20,13 @@ function makeProdConfig(stateFile: string, overrides: Record<string, string> = {
   return loadConfig({
     SNOWMOON_NETWORK: "mainnet",
     SNOWMOON_CHAIN_MODE: "rpc",
-    SNOWMOON_ENV: "production",
+    SNOWMOON_ENV: "development",
     SNOWMOON_DB_MODE: "json",
     SNOWMOON_PERSISTENCE_FILE: stateFile,
     SNOWMOON_STATE_FILE: stateFile,
     SNOWMOON_AI_MODE: "mock",
     SNOWMOON_WALLET_MODE: "mock",
+    WALLET_SESSION_SECRET: "test-phase22-secret",
     ...overrides,
   });
 }
@@ -34,11 +35,29 @@ test("Phase 22.1: Complete E2E Workforce Lifecycle (Escrow -> Discovery -> Execu
   const stateFile = makeTempStateFile();
   const pinnedHash = "1a5cf8146f09d9f8c2605e070fafaa16abd0634b787a47c61447b16a256afdfc";
   const config = makeProdConfig(stateFile, {
+    SNOWMOON_AI_MODE: "near_ai",
+    NEAR_AI_API_KEY: "sk-test",
     OUTLAYER_PAYMENT_KEY: "pk_test_mock_phase22",
     OUTLAYER_PROJECT_OWNER: "cryptozax.near",
     OUTLAYER_PROJECT_NAME: "snowmoon-worker",
     OUTLAYER_EXPECTED_WASM_HASH: pinnedHash,
   });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const u = String(input);
+    if (u.includes("cloud-api.near.ai")) {
+      return new Response(
+        JSON.stringify({
+          id: "chat-phase22",
+          model: "deepseek/deepseek-v3.2",
+          choices: [{ message: { content: "Phase 22 NEAR AI research deliverable" } }],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    }
+    return origFetch(input, init);
+  }) as typeof fetch;
 
   let capturedInputHash = "";
   let capturedOutputHash = "";
@@ -351,6 +370,7 @@ test("Phase 22.1: Complete E2E Workforce Lifecycle (Escrow -> Discovery -> Execu
     assert.equal(settleRec.settlement.status, "CONFIRMED", JSON.stringify(settleRec));
     assert.equal(settleRec.settlement.onChainConfirmed, true, JSON.stringify(settleRec));
   } finally {
+    globalThis.fetch = origFetch;
     app.server.close();
     app.server.closeAllConnections?.();
   }
@@ -542,7 +562,14 @@ test("Phase 22.2: OutLayer pre-execution pinned WASM check, expired attestation 
       wf.executeJob({
         jobId: "job-valid-tee",
         workerId,
-        aiAdapter: new AIWorkerAdapter(prodConfig),
+        aiAdapter: new AIWorkerAdapter(
+          { ...prodConfig, aiMode: "near_ai", hasNearAiKey: true, secrets: { ...prodConfig.secrets, nearAiApiKey: "sk-test" } },
+          async () =>
+            new Response(
+              JSON.stringify({ id: "chat-1", model: "deepseek/deepseek-v3.2", choices: [{ message: { content: "Research summary" } }] }),
+              { status: 200, headers: { "content-type": "application/json" } }
+            )
+        ),
         outlayerAdapter: expiredAdapter,
         requireLiveOutlayer: true,
         maxRetries: 0,

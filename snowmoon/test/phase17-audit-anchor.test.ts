@@ -308,11 +308,16 @@ test("38. Phase 17.2 AuditAnchor tx prep enforces operator auth, 5-arg Rust ABI,
 
 test("39. Phase 17.3 HTTP /api/audit/status returns live deployed AuditAnchor state", async () => {
   const dir = makeTempDir();
+  const baseCfg = loadConfig();
   const app = createSnowMoonApp({
-    ...loadConfig(),
+    ...baseCfg,
     port: 0,
     stateFile: path.join(dir, "state.json"),
     persistenceFile: path.join(dir, "db.json"),
+    secrets: {
+      ...baseCfg.secrets,
+      walletSessionSecret: baseCfg.secrets.walletSessionSecret || "test-phase17-secret",
+    },
   });
   await new Promise<void>((resolve) => app.server.listen(0, "127.0.0.1", resolve));
   try {

@@ -18,6 +18,9 @@ export type WorkforceLifecycleState =
   | "VERIFIED"
   | "SETTLED"
   | "REFUNDED"
+  | "REJECTED"
+  | "EXPIRED"
+  | "DISPUTED"
   | "FAILED"
   | "CANCELLED";
 
@@ -40,6 +43,7 @@ export interface WorkforceJobExecution {
   customerAccountId: string;
   tenantId?: string | null;
   escrowIntentId?: string | null;
+  escrowTxHash?: string | null;
   amountAtomic: string;
   requiredCapabilities: string[];
   prompt: string;
@@ -87,23 +91,28 @@ export class WorkforceEngine {
 
   constructor(repo?: SnowMoonRepository) {
     this.repo = repo;
-    if (repo) {
-      for (const w of repo.getCollection<WorkerProfile>("workers")) {
-        this.workers.set(w.workerId, w);
-      }
-      for (const j of repo.getCollection<WorkforceJobExecution>("workforceJobs")) {
-        // Recover interrupted EXECUTING jobs after server restart
-        if (j.state === "EXECUTING") {
-          j.state = "FAILED";
-          j.lastError = "Recovered from server restart while EXECUTING.";
-          j.updatedAt = new Date().toISOString();
-          if (j.assignedWorkerId) {
-            const w = this.workers.get(j.assignedWorkerId);
-            if (w && w.activeJobs > 0) w.activeJobs -= 1;
-          }
+    this.reloadFromRepo();
+  }
+
+  public reloadFromRepo(): void {
+    if (!this.repo) return;
+    this.workers.clear();
+    this.jobs.clear();
+    for (const w of this.repo.getCollection<WorkerProfile>("workers")) {
+      this.workers.set(w.workerId, w);
+    }
+    for (const j of this.repo.getCollection<WorkforceJobExecution>("workforceJobs")) {
+      // Recover interrupted EXECUTING jobs after server restart
+      if (j.state === "EXECUTING") {
+        j.state = "FAILED";
+        j.lastError = "Recovered from server restart while EXECUTING.";
+        j.updatedAt = new Date().toISOString();
+        if (j.assignedWorkerId) {
+          const w = this.workers.get(j.assignedWorkerId);
+          if (w && w.activeJobs > 0) w.activeJobs -= 1;
         }
-        this.jobs.set(j.jobId, j);
       }
+      this.jobs.set(j.jobId, j);
     }
   }
 
@@ -159,10 +168,21 @@ export class WorkforceEngine {
     return token;
   }
 
-  public assertWorkerAuthorized(workerId: string, token: string | undefined): void {
+  public assertWorkerAuthorized(
+    workerId: string,
+    token: string | undefined,
+    requireAuthKeyHash = false
+  ): void {
     const w = this.workers.get(workerId);
     if (!w) throw new Error(`ERR_UNKNOWN_WORKER: ${workerId}`);
-    if (!w.authKeyHash) return; // backward-compatible if no token issued
+    if (!w.authKeyHash) {
+      if (requireAuthKeyHash) {
+        throw new Error(
+          `ERR_WORKER_TOKEN_NOT_CONFIGURED: Worker ${workerId} has no authKeyHash configured in production.`
+        );
+      }
+      return; // backward-compatible in non-production if no token issued
+    }
     if (!token) throw new Error("ERR_WORKER_AUTH_REQUIRED: Missing x-worker-token.");
     const hash = crypto.createHash("sha256").update(token.trim()).digest("hex");
     if (hash !== w.authKeyHash) {
@@ -201,22 +221,38 @@ export class WorkforceEngine {
     customerAccountId: string;
     tenantId?: string;
     escrowIntentId?: string;
+    escrowTxHash?: string;
     amountAtomic: string;
     requiredCapabilities: string[];
     prompt: string;
     deadlineSec: number;
     funded?: boolean;
   }): WorkforceJobExecution {
+    const normalizedCaps = params.requiredCapabilities
+      .map((c) => c.trim().toLowerCase())
+      .filter(Boolean);
     const existing = this.jobs.get(params.jobId);
     if (existing) {
+      const existingCaps = [...existing.requiredCapabilities].sort().join("|");
+      const incomingCaps = [...normalizedCaps].sort().join("|");
+      if (
+        existing.customerAccountId !== params.customerAccountId ||
+        existing.amountAtomic !== params.amountAtomic ||
+        existing.prompt !== params.prompt ||
+        existing.deadlineSec !== params.deadlineSec ||
+        existingCaps !== incomingCaps ||
+        (params.escrowTxHash !== undefined && existing.escrowTxHash !== params.escrowTxHash) ||
+        (params.escrowIntentId !== undefined && existing.escrowIntentId !== params.escrowIntentId)
+      ) {
+        throw new Error(
+          `ERR_DUPLICATE_JOB_ID: Job ${params.jobId} is already registered with immutable parameters.`
+        );
+      }
       if (params.funded && existing.state === "CREATED") {
         existing.state = "FUNDED";
         existing.updatedAt = new Date().toISOString();
+        this.persist();
       }
-      if (params.escrowIntentId && !existing.escrowIntentId) {
-        existing.escrowIntentId = params.escrowIntentId;
-      }
-      this.persist();
       return existing;
     }
     const inputHash =
@@ -226,6 +262,7 @@ export class WorkforceEngine {
       customerAccountId: params.customerAccountId,
       tenantId: params.tenantId ?? params.customerAccountId,
       escrowIntentId: params.escrowIntentId ?? null,
+      escrowTxHash: params.escrowTxHash ?? null,
       amountAtomic: params.amountAtomic,
       requiredCapabilities: params.requiredCapabilities.map((c) => c.trim().toLowerCase()),
       prompt: params.prompt,
@@ -465,7 +502,6 @@ export class WorkforceEngine {
             result: aiResult.deliverableMarkdown,
             model: aiResult.model,
             providerMode: aiResult.adapterMode,
-            completedAt: new Date().toISOString(),
           };
           const canonical = JSON.stringify(structuredOutput);
           const evidenceHash =
@@ -516,9 +552,14 @@ export class WorkforceEngine {
               olRes.mode === "live_outlayer" &&
               (olRes.status !== "ATTESTATION_VERIFIED" || !job.outlayerAttestationVerified)
             ) {
-              throw new Error(
+              const teeErr = new Error(
                 `ERR_OUTLAYER_TEE_FAILED (${olRes.status}): ${olRes.error || "TEE execution or attestation verification did not complete with ATTESTATION_VERIFIED."}`
               );
+              if (olRes.status === "EXECUTION_PENDING") {
+                this.persist();
+                throw teeErr;
+              }
+              throw teeErr;
             }
           }
 
@@ -541,6 +582,9 @@ export class WorkforceEngine {
           return job;
         } catch (err) {
           lastErr = err instanceof Error ? err : new Error(String(err));
+          if (lastErr.message.includes("EXECUTION_PENDING")) {
+            break;
+          }
         }
       }
 

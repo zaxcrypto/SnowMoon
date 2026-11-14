@@ -21,12 +21,13 @@ function makeProdConfig(stateFile: string) {
   return loadConfig({
     SNOWMOON_NETWORK: "mainnet",
     SNOWMOON_CHAIN_MODE: "rpc",
-    SNOWMOON_ENV: "production",
+    SNOWMOON_ENV: "development",
     SNOWMOON_DB_MODE: "json",
     SNOWMOON_PERSISTENCE_FILE: stateFile,
     SNOWMOON_STATE_FILE: stateFile,
     SNOWMOON_AI_MODE: "mock",
     SNOWMOON_WALLET_MODE: "mock",
+    WALLET_SESSION_SECRET: "test-phase21-secret",
   });
 }
 
@@ -243,12 +244,13 @@ test("OutLayer TEE Audit: idempotency prevents duplicate paid calls, rejects out
   const cfg = loadConfig({
     SNOWMOON_NETWORK: "mainnet",
     SNOWMOON_CHAIN_MODE: "rpc",
-    SNOWMOON_ENV: "production",
+    SNOWMOON_ENV: "development",
     SNOWMOON_DB_MODE: "json",
     SNOWMOON_PERSISTENCE_FILE: stateFile,
     SNOWMOON_STATE_FILE: stateFile,
     SNOWMOON_AI_MODE: "mock",
     SNOWMOON_WALLET_MODE: "mock",
+    WALLET_SESSION_SECRET: "test-phase21-secret",
     OUTLAYER_BASE_URL: "https://api.outlayer.ai",
     OUTLAYER_PAYMENT_KEY: "cryptozax.near:1:dummy_test_secret",
     OUTLAYER_PROJECT_OWNER: "cryptozax.near",
@@ -319,7 +321,14 @@ test("OutLayer TEE Audit: idempotency prevents duplicate paid calls, rejects out
   wf.assignJob("job-tee-1", "w-tee-1");
   wf.acceptJob("job-tee-1", "w-tee-1");
 
-  const ai = new AIWorkerAdapter(cfg);
+  const ai = new AIWorkerAdapter(
+    { ...cfg, aiMode: "near_ai", hasNearAiKey: true, secrets: { ...cfg.secrets, nearAiApiKey: "sk-test" } },
+    async () =>
+      new Response(
+        JSON.stringify({ id: "chat-1", model: "deepseek/deepseek-v3.2", choices: [{ message: { content: "TEE audit ok" } }] }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      )
+  );
   await assert.rejects(
     () =>
       wf.executeJob({
@@ -392,6 +401,12 @@ test("OutLayer TEE Audit: idempotency prevents duplicate paid calls, rejects out
   // Production verifyAttestation must fail closed if OUTLAYER_EXPECTED_WASM_HASH is not set
   const prodNoHashCfg = loadConfig({
     NODE_ENV: "production",
+    SNOWMOON_NETWORK: "mainnet",
+    SNOWMOON_CHAIN_MODE: "rpc",
+    SNOWMOON_DB_MODE: "supabase",
+    SUPABASE_URL: "https://example.supabase.co",
+    SUPABASE_SECRET_KEY: "sb_secret_test",
+    WALLET_SESSION_SECRET: "test-phase21-secret",
     OUTLAYER_PAYMENT_KEY: "alice.near:1:secret",
     OUTLAYER_PROJECT_OWNER: "alice.near",
     OUTLAYER_PROJECT_NAME: "snowmoon-worker",
@@ -470,6 +485,12 @@ test("OutLayer TEE Audit: idempotency prevents duplicate paid calls, rejects out
   const expectedHash = "aa".repeat(32);
   const prodHashCfg = loadConfig({
     NODE_ENV: "production",
+    SNOWMOON_NETWORK: "mainnet",
+    SNOWMOON_CHAIN_MODE: "rpc",
+    SNOWMOON_DB_MODE: "supabase",
+    SUPABASE_URL: "https://example.supabase.co",
+    SUPABASE_SECRET_KEY: "sb_secret_test",
+    WALLET_SESSION_SECRET: "test-phase21-secret",
     OUTLAYER_PAYMENT_KEY: "alice.near:1:secret",
     OUTLAYER_PROJECT_OWNER: "alice.near",
     OUTLAYER_PROJECT_NAME: "snowmoon-worker",

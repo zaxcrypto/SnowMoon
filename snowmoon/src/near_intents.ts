@@ -100,12 +100,17 @@ export class NearIntentsClient {
     this.config = config;
     this.fetchImpl = fetchImpl;
     this.repo = repo;
-    if (repo) {
-      for (const r of repo.getCollection<NearIntentSwapRecord>("intents")) {
-        this.records.set(r.depositAddress, r);
-        if (r.sourceTxHash) {
-          this.txToDeposit.set(r.sourceTxHash, r.depositAddress);
-        }
+    this.reloadFromRepo();
+  }
+
+  public reloadFromRepo(): void {
+    if (!this.repo) return;
+    this.records.clear();
+    this.txToDeposit.clear();
+    for (const r of this.repo.getCollection<NearIntentSwapRecord>("intents")) {
+      this.records.set(r.depositAddress, r);
+      if (r.sourceTxHash) {
+        this.txToDeposit.set(r.sourceTxHash, r.depositAddress);
       }
     }
   }
@@ -339,6 +344,155 @@ export class NearIntentsClient {
       quote: quoteData as unknown as Record<string, unknown>,
       originToken,
       destinationToken: nearNativeUsdc,
+      record,
+    };
+  }
+
+  public async proxyWidgetQuote(
+    nearRpc: NearMainnetRpcAdapter,
+    quoteRequest: Record<string, unknown>
+  ): Promise<{
+    dry: boolean;
+    quote: Record<string, unknown>;
+    quoteResponse: Record<string, unknown>;
+    record: NearIntentSwapRecord | null;
+  }> {
+    const originAsset = String(quoteRequest.originAsset || "").trim();
+    const { tokens, nearNativeUsdc } = await this.fetchSupportedTokens();
+    const originToken = tokens.find((t) => t.assetId === originAsset);
+    if (!originToken) {
+      throw new Error(
+        `ERR_UNSUPPORTED_ORIGIN_ASSET: "${originAsset}" is not in 1Click supported tokens.`
+      );
+    }
+    const requestedDest = String(quoteRequest.destinationAsset || "").trim();
+    if (requestedDest && requestedDest !== nearNativeUsdc.assetId) {
+      throw new Error(
+        `ERR_INVALID_DESTINATION_ASSET: Destination must be NEAR Mainnet USDC (${nearNativeUsdc.assetId}).`
+      );
+    }
+    const amountVal = parseU128DecimalString(
+      String(quoteRequest.amount || ""),
+      "amount",
+      false
+    );
+    const dry = Boolean(quoteRequest.dry);
+    const payload = {
+      ...quoteRequest,
+      originAsset: originToken.assetId,
+      destinationAsset: nearNativeUsdc.assetId,
+      amount: amountVal.toString(),
+    };
+
+    const resp = await this.fetchImpl(`${this.config.oneClickApiBaseUrl}/v0/quote`, {
+      method: "POST",
+      headers: this.buildHeaders(),
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => "");
+      throw new Error(`ERR_1CLICK_QUOTE_HTTP_${resp.status}: ${errText.slice(0, 240)}`);
+    }
+
+    const quoteData = (await resp.json()) as {
+      quote?: Record<string, unknown> & {
+        depositAddress?: string;
+        amountIn?: string;
+        amountOut?: string;
+        minAmountOut?: string;
+        deadline?: string;
+        estimatedFeesUsd?: string;
+      };
+      depositAddress?: string;
+      amountIn?: string;
+      amountOut?: string;
+      minAmountOut?: string;
+      deadline?: string;
+    };
+    const q = (quoteData.quote ?? quoteData) as Record<string, unknown> & {
+      depositAddress?: string;
+      amountIn?: string;
+      amountOut?: string;
+      minAmountOut?: string;
+      deadline?: string;
+      estimatedFeesUsd?: string;
+    };
+
+    if (dry || !q.depositAddress) {
+      return {
+        dry,
+        quote: q,
+        quoteResponse: quoteData as unknown as Record<string, unknown>,
+        record: null,
+      };
+    }
+
+    const depositAddress = String(q.depositAddress).trim();
+    if (this.records.has(depositAddress)) {
+      return {
+        dry: false,
+        quote: q,
+        quoteResponse: quoteData as unknown as Record<string, unknown>,
+        record: this.records.get(depositAddress) || null,
+      };
+    }
+
+    const recipient = String(quoteRequest.recipient || "").trim();
+    let customerNear = recipient;
+    let preSwapNearUsdcAtomic = "0";
+    try {
+      customerNear = assertValidNearAccountId(recipient, "recipient");
+      const preNear = await nearRpc.inspectMainnetAccount(customerNear);
+      preSwapNearUsdcAtomic = preNear.usdcBalanceAtomic;
+    } catch {
+      // Non-NEAR or intents internal recipient
+    }
+
+    const now = new Date().toISOString();
+    const record: NearIntentSwapRecord = {
+      intentId:
+        "ni_" +
+        crypto
+          .createHash("sha256")
+          .update(`${depositAddress}|${customerNear}|${now}`)
+          .digest("hex")
+          .slice(0, 16),
+      customerNearAccount: customerNear,
+      sourceWalletAddress: String(quoteRequest.refundTo || customerNear),
+      sourceChain: originToken.blockchain,
+      originAsset: originToken.assetId,
+      destinationAsset: nearNativeUsdc.assetId,
+      amountInAtomic: String(q.amountIn || amountVal.toString()),
+      expectedAmountOutAtomic: String(q.amountOut || "0"),
+      minAmountOutAtomic: String(q.minAmountOut || q.amountOut || "0"),
+      estimatedFeesUsd: q.estimatedFeesUsd ?? null,
+      slippageToleranceBps: Number(quoteRequest.slippageTolerance ?? 100),
+      depositAddress,
+      quoteExpiresAt: String(q.deadline || quoteRequest.deadline || new Date(Date.now() + 30 * 60 * 1000).toISOString()),
+      sourceTxHash: null,
+      sourceTxConfirmed: false,
+      lifecycleStage: "QUOTE_GENERATED",
+      status: "PENDING_DEPOSIT",
+      rawStatus: "PENDING_DEPOSIT",
+      preSwapNearUsdcAtomic,
+      postSwapNearUsdcAtomic: null,
+      receivedDeltaAtomic: null,
+      destinationTxHash: null,
+      destinationVerified: false,
+      escrowFundingEnabled: false,
+      escrowIntentId: null,
+      actionableError: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    this.records.set(depositAddress, record);
+    this.persist();
+
+    return {
+      dry: false,
+      quote: q,
+      quoteResponse: quoteData as unknown as Record<string, unknown>,
       record,
     };
   }
