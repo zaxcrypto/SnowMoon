@@ -3168,6 +3168,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename
     console.log(
       `[SnowMoon MVP] Chain Mode: ${app.config.chainMode.toUpperCase()} (${app.config.network}) | AI Adapter: ${app.aiAdapter.getAdapterLabel()} | Wallet Policy: ${app.policyAdapter.getAdapterLabel()}`
     );
+    // Warm up Mainnet RPC cache in the background so initial /api/state loads have live vault metrics
+    void app.nearRpcAdapter.syncMainnetStatus().catch(() => undefined);
   });
 }
 

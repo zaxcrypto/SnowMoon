@@ -338,9 +338,12 @@ export function inspectProductionWasmArtifacts(config: SnowMoonConfig): {
  * NEVER signs or broadcasts any transaction (`liveTxBroadcastingEnabled = false`).
  */
 export class NearMainnetRpcAdapter {
+  private static readonly STATUS_CACHE_TTL_MS = 15_000;
   private config: SnowMoonConfig;
   private fetchImpl: typeof fetch;
   private cachedStatus: NearMainnetStatusSnapshot | null = null;
+  private lastSuccessfulSyncAt = 0;
+  private inFlightSync = new Map<string, Promise<NearMainnetStatusSnapshot>>();
 
   constructor(config: SnowMoonConfig, fetchImpl: typeof fetch = fetch) {
     this.config = config;
@@ -351,21 +354,30 @@ export class NearMainnetRpcAdapter {
     return this.config.nearMainnetRpcUrl || "https://free.rpc.fastnear.com";
   }
 
+  private getRpcCandidates(): string[] {
+    const primary = this.getRpcUrl();
+    return Array.from(
+      new Set([
+        primary,
+        "https://free.rpc.fastnear.com",
+        "https://rpc.fastnear.com",
+        "https://near.drpc.org",
+        "https://rpc.mainnet.near.org",
+      ])
+    );
+  }
+
   private async rpcCall<T = unknown>(
     method: string,
     params: unknown
   ): Promise<{ ok: boolean; result?: T; error?: unknown }> {
-    const primaryUrl = this.getRpcUrl();
-    const fallbackUrl =
-      primaryUrl === "https://rpc.mainnet.near.org"
-        ? "https://free.rpc.fastnear.com"
-        : "https://rpc.mainnet.near.org";
+    const candidates = this.getRpcCandidates();
+    const maxAttempts = Math.min(Math.max(candidates.length, 3), 4);
     let lastError: unknown = "Unknown RPC error";
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      const targetUrl =
-        attempt > 1 && primaryUrl !== fallbackUrl ? fallbackUrl : primaryUrl;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const targetUrl = candidates[(attempt - 1) % candidates.length]!;
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 15000);
+      const timer = setTimeout(() => controller.abort(), 5500);
       try {
         const resp = await this.fetchImpl(targetUrl, {
           method: "POST",
@@ -380,8 +392,8 @@ export class NearMainnetRpcAdapter {
         });
         if (resp.status === 429 || resp.status >= 500) {
           lastError = `HTTP ${resp.status} ${resp.statusText}`;
-          if (attempt < 3) {
-            await new Promise((r) => setTimeout(r, 300 * attempt));
+          if (attempt < maxAttempts) {
+            await new Promise((r) => setTimeout(r, 200 * attempt));
             continue;
           }
           return { ok: false, error: lastError };
@@ -399,8 +411,8 @@ export class NearMainnetRpcAdapter {
         return { ok: true, result: data.result };
       } catch (err) {
         lastError = err instanceof Error ? err.message : String(err);
-        if (attempt < 3) {
-          await new Promise((r) => setTimeout(r, 300 * attempt));
+        if (attempt < maxAttempts) {
+          await new Promise((r) => setTimeout(r, 200 * attempt));
           continue;
         }
       } finally {
@@ -1085,8 +1097,35 @@ export class NearMainnetRpcAdapter {
 
   /**
    * Synchronizes and caches the complete NEAR Mainnet RPC read-only snapshot.
+   * Uses a 15s TTL cache, in-flight request deduplication, and stale-while-revalidate
+   * fallback so transient RPC rate-limits never blank out live vault metrics.
    */
   public async syncMainnetStatus(extraAccountId?: string): Promise<NearMainnetStatusSnapshot> {
+    const trimmedExtra = extraAccountId?.trim() || undefined;
+    if (
+      !trimmedExtra &&
+      this.cachedStatus &&
+      this.cachedStatus.rpcReachable &&
+      this.cachedStatus.contracts?.core?.viewQueryResult &&
+      Date.now() - this.lastSuccessfulSyncAt < NearMainnetRpcAdapter.STATUS_CACHE_TTL_MS
+    ) {
+      return this.cachedStatus;
+    }
+
+    const cacheKey = trimmedExtra || "__default__";
+    const existing = this.inFlightSync.get(cacheKey);
+    if (existing) {
+      return existing;
+    }
+
+    const promise = this.performSyncMainnetStatus(trimmedExtra).finally(() => {
+      this.inFlightSync.delete(cacheKey);
+    });
+    this.inFlightSync.set(cacheKey, promise);
+    return promise;
+  }
+
+  private async performSyncMainnetStatus(extraAccountId?: string): Promise<NearMainnetStatusSnapshot> {
     const wasmArtifacts = inspectProductionWasmArtifacts(this.config);
     const statusRes = await this.rpcCall<{
       chain_id: string;
@@ -1181,6 +1220,27 @@ export class NearMainnetRpcAdapter {
         ],
       },
     };
+
+    const prev = this.cachedStatus;
+    if (!snapshot.contracts.core.viewQueryResult && prev?.contracts?.core?.viewQueryResult) {
+      snapshot.contracts.core = prev.contracts.core;
+    }
+    if (!snapshot.contracts.audit.viewQueryResult && prev?.contracts?.audit?.viewQueryResult) {
+      snapshot.contracts.audit = prev.contracts.audit;
+    }
+    if (!snapshot.usdcMainnet.metadata && prev?.usdcMainnet?.metadata) {
+      snapshot.usdcMainnet = prev.usdcMainnet;
+    }
+    if (!snapshot.rpcReachable && prev?.rpcReachable) {
+      snapshot.rpcReachable = prev.rpcReachable;
+      snapshot.chainId = snapshot.chainId ?? prev.chainId;
+      snapshot.latestBlockHeight = snapshot.latestBlockHeight ?? prev.latestBlockHeight;
+      snapshot.latestBlockTime = snapshot.latestBlockTime ?? prev.latestBlockTime;
+      snapshot.protocolVersion = snapshot.protocolVersion ?? prev.protocolVersion;
+    }
+    if (snapshot.rpcReachable && snapshot.contracts.core.viewQueryResult) {
+      this.lastSuccessfulSyncAt = Date.now();
+    }
 
     this.cachedStatus = snapshot;
     return snapshot;

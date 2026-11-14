@@ -2799,12 +2799,21 @@
         });
 
         const mainnetSignal = typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function"
-          ? AbortSignal.timeout(12000)
+          ? AbortSignal.timeout(20000)
           : undefined;
         const mainnetPromise = apiFetch("/api/near/mainnet-status", mainnetSignal ? { signal: mainnetSignal } : {}).then((res) => {
           if (res) {
             latestMainnet = res;
             renderAll();
+          } else if (!latestMainnet) {
+            setTimeout(() => {
+              apiFetch("/api/near/mainnet-status").then((retryRes) => {
+                if (retryRes) {
+                  latestMainnet = retryRes;
+                  renderAll();
+                }
+              }).catch(() => {});
+            }, 2000);
           }
           return res;
         });
@@ -2961,9 +2970,10 @@
       }
 
       // 1. Overview
+      const mainnetLoading = !mn;
       document.getElementById("ov-escrow").textContent = acc
         ? fmtAtomicUsdc(acc.escrowed_usdc)
-        : (rpcFailed ? "RPC Error" : "Unavailable");
+        : (mainnetLoading ? "Loading..." : (rpcFailed ? "RPC Error" : "Unavailable"));
 
       const activeJobs = workforceJobs.filter((j) => ["ASSIGNED", "ACCEPTED", "EXECUTING", "DELIVERED"].includes(j.state)).length;
       const doneJobs = workforceJobs.filter((j) => ["VERIFIED", "SETTLED"].includes(j.state)).length;
@@ -2972,7 +2982,7 @@
       if (acc) {
         document.getElementById("ov-float-assets").textContent = `${fmtAtomicUsdc(acc.total_assets)} / ${fmtAtomicUsdc(acc.total_outstanding)}`;
       } else {
-        document.getElementById("ov-float-assets").textContent = rpcFailed ? "RPC Error" : "Unavailable";
+        document.getElementById("ov-float-assets").textContent = mainnetLoading ? "Loading..." : (rpcFailed ? "RPC Error" : "Unavailable");
       }
 
       document.getElementById("ov-approvals").textContent = String(pendingApprovals.length);
