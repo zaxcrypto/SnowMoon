@@ -2430,6 +2430,8 @@
             primaryBtn = `<button class="btn btn-sm btn-pos" onclick="event.stopPropagation(); verifyJob('${esc(j.jobId)}', true)">Accept &amp; Settle</button>`;
           } else if (j.state === "SETTLED") {
             primaryBtn = `<button class="btn btn-sm btn-primary" onclick="event.stopPropagation(); downloadSettledDeliverable('${esc(j.jobId)}')">Download</button>`;
+          } else if (activeExecutingJobId === j.jobId) {
+            primaryBtn = `<button class="btn btn-sm btn-primary" type="button" disabled onclick="event.stopPropagation()"><span class="btn-spinner" aria-hidden="true"></span><span>Executing...</span></button>`;
           } else if (j.state === "FAILED") {
             primaryBtn = `<button class="btn btn-sm btn-primary" onclick="event.stopPropagation(); executeJob('${esc(j.jobId)}')">Retry Execute</button>`;
           } else if (j.state === "ASSIGNED" || j.state === "ACCEPTED") {
@@ -2507,8 +2509,9 @@
                   </div>` : ""}
                   <div class="job-detail-actions">
                     ${!j.assignedWorkerId && j.state !== "FAILED" ? `<button class="btn btn-sm" onclick="assignJob('${esc(j.jobId)}')">Assign</button>` : ""}
-                    ${j.state === "ASSIGNED" || j.state === "ACCEPTED" ? `<button class="btn btn-sm btn-primary" onclick="executeJob('${esc(j.jobId)}')">Execute</button>` : ""}
-                    ${j.state === "FAILED" ? `<button class="btn btn-sm btn-primary" onclick="executeJob('${esc(j.jobId)}')">Retry Execute</button>` : ""}
+                    ${activeExecutingJobId === j.jobId ? `<button class="btn btn-sm btn-primary" type="button" disabled><span class="btn-spinner" aria-hidden="true"></span><span>Executing...</span></button>` : ""}
+                    ${activeExecutingJobId !== j.jobId && (j.state === "ASSIGNED" || j.state === "ACCEPTED") ? `<button class="btn btn-sm btn-primary" onclick="executeJob('${esc(j.jobId)}')">Execute</button>` : ""}
+                    ${activeExecutingJobId !== j.jobId && j.state === "FAILED" ? `<button class="btn btn-sm btn-primary" onclick="executeJob('${esc(j.jobId)}')">Retry Execute</button>` : ""}
                     ${j.state === "DELIVERED" ? `<button class="btn btn-sm btn-pos" onclick="verifyJob('${esc(j.jobId)}', true)">Accept &amp; Settle</button> <button class="btn btn-sm btn-neg" onclick="openRejectConfirmModal('${esc(j.jobId)}')">Reject</button>` : ""}
                     ${j.state === "VERIFIED" ? `<button class="btn btn-sm btn-primary" onclick="prepareSettlement('${esc(j.jobId)}')">Settle in Wallet</button>` : ""}
                     ${j.state === "SETTLED" && (!v || v.anchorStatus !== "ANCHORED") ? `<button class="btn btn-sm" onclick="prepareAuditAnchor('${esc(j.jobId)}')">Anchor Proof</button>` : ""}
@@ -3365,7 +3368,9 @@
       }
 
       let html = "";
-      if (j.state === "FUNDED" && !j.assignedWorkerId) {
+      if (activeExecutingJobId === j.jobId && ["FUNDED", "ASSIGNED", "ACCEPTED", "FAILED"].includes(j.state)) {
+        html = `<button class="btn btn-sm btn-primary" type="button" disabled><span class="btn-spinner" aria-hidden="true"></span><span>Executing...</span></button>`;
+      } else if (j.state === "FUNDED" && !j.assignedWorkerId) {
         html = `<button class="btn btn-sm btn-primary" type="button" onclick="assignJob('${esc(j.jobId)}')">Assign</button>`;
       } else if (j.state === "ASSIGNED" || j.state === "ACCEPTED") {
         html = `<button class="btn btn-sm btn-primary" type="button" onclick="executeJob('${esc(j.jobId)}')">Execute</button>`;
