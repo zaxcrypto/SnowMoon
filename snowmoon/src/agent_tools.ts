@@ -888,7 +888,61 @@ export async function executeAgentTool(
       const contractId = String(rawArgs.contract_id || "").trim();
       const methodName = String(rawArgs.method_name || "").trim();
       const argsJson = String(rawArgs.args_json || "{}").trim() || "{}";
-      const rpcUrl = ctx.nearRpcUrl || "https://rpc.mainnet.near.org";
+      const rpcUrl = ctx.nearRpcUrl || "https://rpc.mainnet.fastnear.com";
+
+      if (
+        !methodName ||
+        methodName === "get_account_state" ||
+        methodName === "view_account" ||
+        methodName === "get_balance"
+      ) {
+        const resp = await ctx.fetchImpl(rpcUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: "snowmoon-agent",
+            method: "query",
+            params: {
+              request_type: "view_account",
+              finality: "final",
+              account_id: contractId,
+            },
+          }),
+        });
+        const json = (await resp.json()) as {
+          result?: {
+            amount?: string;
+            locked?: string;
+            code_hash?: string;
+            storage_usage?: number;
+            block_height?: number;
+            block_hash?: string;
+          };
+          error?: unknown;
+        };
+        if (json.error || !json.result) {
+          return {
+            ok: false,
+            output: `NEAR RPC error: ${JSON.stringify(json.error || "empty result")}`,
+            summary: "RPC error",
+          };
+        }
+        return {
+          ok: true,
+          output: JSON.stringify({
+            account_id: contractId,
+            amount_yocto: json.result.amount,
+            amount_near: (Number(json.result.amount || "0") / 1e24).toFixed(4),
+            storage_usage: json.result.storage_usage,
+            code_hash: json.result.code_hash,
+            block_height: json.result.block_height,
+            block_hash: json.result.block_hash,
+          }),
+          summary: `NEAR account ${contractId} verified`,
+        };
+      }
+
       const argsBase64 = Buffer.from(argsJson, "utf8").toString("base64");
       const resp = await ctx.fetchImpl(rpcUrl, {
         method: "POST",

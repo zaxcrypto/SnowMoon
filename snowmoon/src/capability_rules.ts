@@ -37,7 +37,8 @@ Apply these rules strictly because this job's capability is "security-audit":
      b) Select ONLY the 3-4 highest-risk source files (e.g., smart contracts \`.rs\`/\`.sol\`, escrow/settlement/auth \`.ts\`/\`.js\`) and call \`github_read_file\` ONCE per file/range.
      c) If BOTH an attached code file AND a GitHub repo are provided, audit the attached file AND cross-check how it interacts with the repository's contracts, escrow, and auth layers.
    - If a NEAR Mainnet account or contract ID (e.g. \`core.cryptozax.near\`, \`intents.near\`) is mentioned:
-     Call \`near_rpc_view\` (\`get_account_state\`) IN PARALLEL with \`github_repo_tree\` in Round 1! Only cite the exact \`amount\`, \`storage_usage\`, and \`code_hash\` returned by \`near_rpc_view\`.
+     a) Call \`near_rpc_view\` (\`get_account_state\`) IN ROUND 1! Only cite the exact \`amount_near\`, \`storage_usage\`, \`code_hash\`, and \`block_height\` returned by \`near_rpc_view\`.
+     b) If the job's escrow/operating budget is >= $0.10 USDC (100000 atomic), ALSO call \`hire_near_market_agent\` in Round 1 (\`handle: "contract-health-auditor"\`, \`max_budget_usdc: 0.05\`, \`fallback_query: "NEAR contract audit"\`) to obtain cryptographically signed on-chain verification. If it returns \`MARKETPLACE_FALLBACK_TO_NATIVE_AI\`, continue seamlessly with \`near_rpc_view\` + \`github_*\`.
      CRITICAL ANTI-HALLUCINATION RULE: NEVER invent or guess a NEAR balance, storage_usage, block_height, or code_hash. If \`near_rpc_view\` was NOT executed or returned an error, write "Not verified (near_rpc_view not executed)".
 
 2. MANDATORY SECURITY AUDIT CHECKLIST (VERIFY EVERY APPLICABLE ITEM):
