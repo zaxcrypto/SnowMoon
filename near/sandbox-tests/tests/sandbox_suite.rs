@@ -19,6 +19,14 @@ fn usdc(n: u128) -> u128 {
     n * 1_000_000
 }
 
+fn future_deadline() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock")
+        .as_secs()
+        + 7 * 24 * 60 * 60
+}
+
 fn core_wasm() -> Vec<u8> {
     std::fs::read("../target/wasm32-unknown-unknown/release/snapfall_core.wasm")
         .expect("build snapfall-core wasm first")
@@ -105,7 +113,7 @@ async fn create_job_returning_id(e: &Env, customer: &near_workspaces::AccountId,
     e.admin.call(e.core.id(), "create_job").deposit(STORAGE_DEPOSIT)
         .args_json(json!({"customer": customer, "operator": e.operator.id(),
                           "customer_payment": U128(pay), "max_operating_budget": U128(pay / 2),
-                          "terms_hash": hex32(0xaa), "deadline": 9_999_999_999u64}))
+                          "terms_hash": hex32(0xaa), "deadline": future_deadline()}))
         .transact().await.unwrap().unwrap().json::<String>().unwrap()
 }
 
@@ -144,7 +152,7 @@ async fn test_unregistered_customer_refund_falls_back_to_claimable() {
     let jid: String = e.admin.call(e.core.id(), "create_job").deposit(STORAGE_DEPOSIT)
         .args_json(json!({"customer": e.customer.id(), "operator": e.operator.id(),
                           "customer_payment": U128(usdc(25)), "max_operating_budget": U128(usdc(10)),
-                          "terms_hash": hex32(0xaa), "deadline": 9_999_999_999u64}))
+                          "terms_hash": hex32(0xaa), "deadline": future_deadline()}))
         .transact().await.unwrap().unwrap().json().unwrap();
     relayer.call(e.ft.id(), "ft_transfer_call").deposit(ONE_YOCTO).gas(Gas::from_tgas(100))
         .args_json(json!({"receiver_id": e.core.id(), "amount": U128(usdc(25)), "msg": json!({"FundJob": {"job_id": jid}}).to_string()}))
@@ -310,7 +318,7 @@ async fn test_full_persistent_storage_delta_gate() {
     e.admin.call(e.core.id(), "create_job").deposit(STORAGE_DEPOSIT)
         .args_json(json!({"customer": long_cust, "operator": long_op,
                           "customer_payment": U128(usdc(25)), "max_operating_budget": U128(usdc(10)),
-                          "terms_hash": hex32(0xaa), "deadline": 9_999_999_999u64}))
+                          "terms_hash": hex32(0xaa), "deadline": future_deadline()}))
         .transact().await.unwrap().unwrap();
     let after = e.core.view_account().await.unwrap().storage_usage;
     let delta = after - before;
