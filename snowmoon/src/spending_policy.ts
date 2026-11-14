@@ -56,7 +56,7 @@ export const DEFAULT_SPENDING_POLICY: SpendingPolicyConfig = {
   dailyLimitAtomic: "20000000", // $20.00 USDC
   jobTotalLimitAtomic: "10000000", // $10.00 USDC
   humanApprovalThresholdAtomic: "100000", // $0.10 USDC
-  allowedMerchants: ["api.near.ai", "outlayer.near", "x402.snowmoon.near"],
+  allowedMerchants: ["api.near.ai", "outlayer.near", "x402.snowmoon.near", "market.near.ai", "*.market.near.ai"],
   blockedCategories: ["gambling", "mixer", "unverified-bridge", "arbitrary-transfer"],
   allowedTokens: ["17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1"], // Mainnet native USDC
   allowedNetworks: ["near-mainnet"],
@@ -142,7 +142,16 @@ export class DeterministicSpendingPolicyEngine {
     } catch {
       reasons.push(`ERR_INVALID_DESTINATION: ${intent.destination} is not a valid NEAR account.`);
     }
-    if (!this.policy.allowedMerchants.includes(intent.merchant)) {
+    const merchantLower = String(intent.merchant || "").trim().toLowerCase();
+    const merchantAllowed = this.policy.allowedMerchants.some((allowed) => {
+      const a = allowed.toLowerCase();
+      if (a.startsWith("*.")) {
+        const suffix = a.slice(1); // ".market.near.ai"
+        return merchantLower.endsWith(suffix) && merchantLower.length > suffix.length;
+      }
+      return merchantLower === a;
+    });
+    if (!merchantAllowed) {
       reasons.push(`ERR_MERCHANT_NOT_ALLOWED: Merchant ${intent.merchant} is not allowlisted.`);
     }
     if (this.policy.blockedCategories.includes(intent.category.toLowerCase())) {
@@ -299,5 +308,62 @@ export class DeterministicSpendingPolicyEngine {
 
   public getJobReservedAtomic(jobId: string): string {
     return (this.jobReserved.get(normalizeHex32Lowercase(jobId, "jobId")) ?? 0n).toString();
+  }
+
+  public getConfig(): SpendingPolicyConfig {
+    return {
+      ...this.policy,
+      allowedMerchants: [...this.policy.allowedMerchants],
+      blockedCategories: [...this.policy.blockedCategories],
+      allowedTokens: [...this.policy.allowedTokens],
+      allowedNetworks: [...this.policy.allowedNetworks],
+    };
+  }
+
+  public updateConfig(patch: Partial<SpendingPolicyConfig>): SpendingPolicyConfig {
+    const validateAtomic = (value: unknown, field: string): string | undefined => {
+      if (value === undefined) return undefined;
+      const raw = String(value).trim();
+      if (!/^\d+$/.test(raw)) {
+        throw new Error(`ERR_INVALID_SPENDING_LIMIT: ${field} must be a non-negative integer atomic string.`);
+      }
+      return BigInt(raw).toString();
+    };
+    const normalizeList = (value: unknown, field: string): string[] | undefined => {
+      if (value === undefined) return undefined;
+      if (!Array.isArray(value)) {
+        throw new Error(`ERR_INVALID_SPENDING_POLICY: ${field} must be an array of strings.`);
+      }
+      return value.map((item) => String(item).trim()).filter(Boolean);
+    };
+
+    const perTask = validateAtomic(patch.perTaskBudgetAtomic, "perTaskBudgetAtomic");
+    const perTx = validateAtomic(patch.perTxLimitAtomic, "perTxLimitAtomic");
+    const daily = validateAtomic(patch.dailyLimitAtomic, "dailyLimitAtomic");
+    const jobTotal = validateAtomic(patch.jobTotalLimitAtomic, "jobTotalLimitAtomic");
+    const humanApproval = validateAtomic(
+      patch.humanApprovalThresholdAtomic,
+      "humanApprovalThresholdAtomic"
+    );
+    const allowedMerchants = normalizeList(patch.allowedMerchants, "allowedMerchants");
+    const blockedCategories = normalizeList(patch.blockedCategories, "blockedCategories");
+    const allowedTokens = normalizeList(patch.allowedTokens, "allowedTokens");
+    const allowedNetworks = normalizeList(patch.allowedNetworks, "allowedNetworks");
+
+    if (perTask !== undefined) this.policy.perTaskBudgetAtomic = perTask;
+    if (perTx !== undefined) this.policy.perTxLimitAtomic = perTx;
+    if (daily !== undefined) this.policy.dailyLimitAtomic = daily;
+    if (jobTotal !== undefined) this.policy.jobTotalLimitAtomic = jobTotal;
+    if (humanApproval !== undefined) this.policy.humanApprovalThresholdAtomic = humanApproval;
+    if (allowedMerchants !== undefined) this.policy.allowedMerchants = allowedMerchants;
+    if (blockedCategories !== undefined) this.policy.blockedCategories = blockedCategories;
+    if (allowedTokens !== undefined && allowedTokens.length > 0) {
+      this.policy.allowedTokens = allowedTokens;
+    }
+    if (allowedNetworks !== undefined && allowedNetworks.length > 0) {
+      this.policy.allowedNetworks = allowedNetworks;
+    }
+
+    return this.getConfig();
   }
 }

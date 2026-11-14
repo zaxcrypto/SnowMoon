@@ -191,7 +191,7 @@ export class WalletSessionManager {
 
   constructor(
     secretSeed?: string,
-    ttlMs = 2 * 60 * 60 * 1000,
+    ttlMs = 30 * 24 * 60 * 60 * 1000,
     options?: { requireSecret?: boolean; repo?: SnowMoonRepository }
   ) {
     if (options?.requireSecret && (!secretSeed || !secretSeed.trim())) {
@@ -756,11 +756,11 @@ export class MainnetEscrowTracker {
     const coreStorageNeed = customerState.needsCoreStorageDeposit
       ? BigInt(customerState.coreStorageShortfallYocto)
       : 0n;
-    const gasBufferYocto = 50_000_000_000_000_000_000_000n; // 0.05 NEAR
+    const gasBufferYocto = 5_000_000_000_000_000_000_000n; // 0.005 NEAR
     const totalNearNeeded = usdcRegNeed + coreStorageNeed + gasBufferYocto;
     if (BigInt(customerState.nearBalanceYocto) < totalNearNeeded) {
       throw new Error(
-        `ERR_INSUFFICIENT_NEAR_BALANCE: Account ${customer} holds ${customerState.nearBalanceYocto} yoctoNEAR, less than required ${totalNearNeeded.toString()} yoctoNEAR (storage + 0.05 NEAR gas reserve).`
+        `ERR_INSUFFICIENT_NEAR_BALANCE: Account ${customer} holds ${customerState.nearBalanceYocto} yoctoNEAR, less than required ${totalNearNeeded.toString()} yoctoNEAR (storage + 0.005 NEAR gas reserve).`
       );
     }
 

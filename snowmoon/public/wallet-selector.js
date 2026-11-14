@@ -160587,16 +160587,29 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
   // src/wallet-selector-entry.ts
   var selector = null;
   var modal2 = null;
-  function mapActions(actions) {
-    return actions.map((a) => ({
-      type: "FunctionCall",
-      params: {
-        methodName: a.methodName,
-        args: a.args,
-        gas: a.gas,
-        deposit: a.deposit
+  function mapActions(actions, walletId) {
+    return actions.map((a) => {
+      const p = a?.params ?? a;
+      if (walletId === "meteor-wallet") {
+        return {
+          functionCall: {
+            methodName: p.methodName,
+            args: new TextEncoder().encode(JSON.stringify(p.args || {})),
+            gas: BigInt(p.gas || "100000000000000"),
+            deposit: BigInt(p.deposit ?? p.depositYocto ?? "0")
+          }
+        };
       }
-    }));
+      return {
+        type: "FunctionCall",
+        params: {
+          methodName: p.methodName,
+          args: p.args || {},
+          gas: String(p.gas || "100000000000000"),
+          deposit: String(p.deposit ?? p.depositYocto ?? "0")
+        }
+      };
+    });
   }
   var bridge = {
     async init({ networkId, contractId, onStateChange }) {
@@ -160664,13 +160677,19 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
       const wallet = await selector.wallet();
       const mapped = txs.map((t) => ({
         receiverId: t.receiverId,
-        actions: mapActions(t.actions)
+        actions: mapActions(t.actions, wallet.id)
       }));
       const raw = mapped.length === 1 ? await wallet.signAndSendTransaction(mapped[0]) : await wallet.signAndSendTransactions({ transactions: mapped });
-      const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
+      const rawObj = raw;
+      const list = Array.isArray(raw) ? raw : Array.isArray(rawObj?.outcomes) ? rawObj.outcomes : Array.isArray(rawObj?.response) ? rawObj.response : raw ? [raw] : [];
       const txHashes = [];
       for (const item of list) {
-        const hash2 = item?.transaction?.hash || item?.transaction_outcome?.id;
+        if (typeof item === "string" && item.trim()) {
+          txHashes.push(item.trim());
+          continue;
+        }
+        const it = item;
+        const hash2 = it?.transaction?.hash || it?.transaction_outcome?.id || it?.hash || it?.txHash;
         if (hash2) txHashes.push(hash2);
       }
       return { txHashes, raw };

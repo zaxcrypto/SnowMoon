@@ -249,7 +249,7 @@ test("5. Live NEAR AI Cloud adapter configuration, token usage, timeout/error fa
   const execRes = await liveAdapter.executeJobTask(job);
   assert.equal(capturedUrl, "https://cloud-api.near.ai/v1/chat/completions");
   assert.equal(capturedAuth, `Bearer ${testSecretKey}`);
-  assert.equal(capturedBody.model, "fireworks::accounts/fireworks/models/llama-v3p3-70b-instruct");
+  assert.equal(capturedBody.model, "openai/gpt-5.4");
   assert.equal(execRes.adapterMode, "near_ai");
   assert.equal(execRes.endpoint, "https://cloud-api.near.ai/v1/chat/completions");
   assert.equal(execRes.requestId, "chatcmpl-near-ai-test-001");
@@ -258,7 +258,7 @@ test("5. Live NEAR AI Cloud adapter configuration, token usage, timeout/error fa
     completionTokens: 42,
     totalTokens: 136,
   });
-  assert.match(execRes.deliverableMarkdown, /LIVE NEAR AI CLOUD — REAL INFERENCE RESPONSE/);
+  assert.match(execRes.deliverableMarkdown, /LIVE NEAR AI CLOUD — AGENTIC WORKER/);
 
   // 5b: Verify error & secret redaction on upstream failure -> falls back to clearly labelled mock adapter
   const stubErrorFetch: typeof fetch = async () => {

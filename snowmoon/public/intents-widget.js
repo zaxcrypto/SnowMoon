@@ -29297,6 +29297,15 @@
     if (/^[0-9a-f]{64}$/.test(s)) return true;
     return /^(([a-z\d]+[-_])*[a-z\d]+\.)*([a-z\d]+[-_])*[a-z\d]+$/.test(s);
   }
+  function buildAuthHeaders(extra) {
+    const headers = { ...extra || {} };
+    try {
+      const token = window.localStorage.getItem("snowmoon_wallet_token") || window.sessionStorage.getItem("snowmoon_wallet_token") || "";
+      if (token) headers["x-wallet-session"] = token;
+    } catch {
+    }
+    return headers;
+  }
   function formatFriendlyQuoteError(raw, token) {
     let msg = raw.replace(/^ERR_1CLICK_QUOTE_HTTP_\d+:\s*/i, "").trim();
     if (msg.startsWith("{")) {
@@ -29571,6 +29580,25 @@
       const openModal = window.openWalletModal;
       if (openModal) openModal();
     }, []);
+    const disconnectSourceWallet = (0, import_react4.useCallback)(() => {
+      if (sourceKind === "evm") {
+        setEvmAddress(null);
+        setSourceBalance(null);
+      } else if (sourceKind === "solana") {
+        const sol = window.solana;
+        sol?.disconnect?.().catch(() => {
+        });
+        setSolAddress(null);
+        setSourceBalance(null);
+      } else if (sourceKind === "near") {
+        const disc = window.disconnectWalletSession;
+        if (disc) disc();
+      }
+    }, [sourceKind]);
+    const disconnectNearWallet = (0, import_react4.useCallback)(() => {
+      const disc = window.disconnectWalletSession;
+      if (disc) disc();
+    }, []);
     const fetchDryQuote = (0, import_react4.useCallback)(async () => {
       if (!selectedToken) return;
       const atomic = toAtomicString(amountInput, selectedToken.decimals);
@@ -29586,7 +29614,7 @@
       try {
         const resp = await fetch("/api/intents/widget-quote", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: buildAuthHeaders({ "Content-Type": "application/json" }),
           body: JSON.stringify({
             dry: true,
             swapType: "EXACT_INPUT",
@@ -29647,7 +29675,7 @@
         setTxStatusMsg("Requesting 1Click deposit quote...");
         const qResp = await fetch("/api/intents/widget-quote", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: buildAuthHeaders({ "Content-Type": "application/json" }),
           body: JSON.stringify({
             dry: false,
             swapType: "EXACT_INPUT",
@@ -29772,7 +29800,7 @@
         });
         await fetch("/api/intents/deposit-submit", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: buildAuthHeaders({ "Content-Type": "application/json" }),
           body: JSON.stringify({
             depositAddress,
             txHash,
@@ -29785,7 +29813,9 @@
         const pollTimer = setInterval(async () => {
           attempts += 1;
           try {
-            const stResp = await fetch(`/api/intents/status?depositAddress=${encodeURIComponent(depositAddress)}`);
+            const stResp = await fetch(`/api/intents/status?depositAddress=${encodeURIComponent(depositAddress)}`, {
+              headers: buildAuthHeaders()
+            });
             const stJson = await stResp.json();
             const status = stJson.record?.status || "";
             if (status === "SUCCESS") {
@@ -29840,10 +29870,10 @@
     }, [tokens, modalChainFilter, modalSearch]);
     const bgCard = "var(--panel, #13131b)";
     const bgInner = "var(--panel-2, #1b1b26)";
-    const borderCol = "var(--border, rgba(155, 152, 232, 0.18))";
+    const borderCol = "var(--border, rgba(16, 185, 129, 0.18))";
     const textMain = "var(--text, #f4f4fa)";
     const textMuted = "var(--muted, #9c9cb4)";
-    const accent = "#9b98e8";
+    const accent = "var(--text, #09090b)";
     const expectedOutFormatted = quote?.amountOutFormatted || "0";
     const rateDisplay = (0, import_react4.useMemo)(() => {
       if (!selectedToken || !quote) return null;
@@ -29930,13 +29960,11 @@
             "div",
             {
               style: {
-                padding: "10px 12px",
-                borderRadius: "10px",
-                background: "rgba(239,68,68,0.12)",
-                border: "1px solid rgba(239,68,68,0.35)",
-                color: "#fca5a5",
-                fontSize: "12px",
-                marginBottom: "12px"
+                color: "var(--neg, #dc2626)",
+                fontSize: "12.5px",
+                fontWeight: 500,
+                lineHeight: 1.45,
+                marginBottom: "10px"
               },
               children: tokensError
             }
@@ -29962,29 +29990,58 @@
                     },
                     children: [
                       /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: { fontSize: "12px", fontWeight: 600, color: textMuted }, children: "From" }),
-                      sourceKind !== "other" && /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(
-                        "button",
-                        {
-                          type: "button",
-                          onClick: () => void connectSourceWallet(),
-                          style: {
-                            display: "inline-flex",
-                            alignItems: "center",
-                            gap: "6px",
-                            background: "transparent",
-                            border: "none",
-                            color: activeSourceWallet ? textMain : accent,
-                            padding: "2px 4px",
-                            fontSize: "12px",
-                            fontWeight: 600,
-                            cursor: "pointer"
-                          },
-                          children: [
-                            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(ChainLogo, { blockchain: selectedToken?.blockchain || sourceKind, size: 15 }),
-                            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { children: activeSourceWallet ? shortAddr(activeSourceWallet) : "Connect" })
-                          ]
-                        }
-                      )
+                      sourceKind !== "other" && /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { style: { display: "inline-flex", alignItems: "center", gap: "4px" }, children: [
+                        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(
+                          "button",
+                          {
+                            type: "button",
+                            onClick: () => void connectSourceWallet(),
+                            style: {
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "6px",
+                              background: "transparent",
+                              border: "none",
+                              color: activeSourceWallet ? textMain : accent,
+                              padding: "2px 4px",
+                              fontSize: "12px",
+                              fontWeight: 600,
+                              cursor: "pointer"
+                            },
+                            children: [
+                              /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(ChainLogo, { blockchain: selectedToken?.blockchain || sourceKind, size: 15 }),
+                              /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { children: activeSourceWallet ? shortAddr(activeSourceWallet) : "Connect" })
+                            ]
+                          }
+                        ),
+                        activeSourceWallet && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
+                          "button",
+                          {
+                            type: "button",
+                            title: "Disconnect source wallet",
+                            "aria-label": "Disconnect source wallet",
+                            onClick: disconnectSourceWallet,
+                            style: {
+                              display: "inline-flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              width: "20px",
+                              height: "20px",
+                              padding: 0,
+                              background: "transparent",
+                              border: "none",
+                              borderRadius: "9999px",
+                              color: textMuted,
+                              cursor: "pointer"
+                            },
+                            children: /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("svg", { width: "13", height: "13", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round", children: [
+                              /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("path", { d: "M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" }),
+                              /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("polyline", { points: "16 17 21 12 16 7" }),
+                              /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("line", { x1: "21", y1: "12", x2: "9", y2: "12" })
+                            ] })
+                          }
+                        )
+                      ] })
                     ]
                   }
                 ),
@@ -30106,29 +30163,58 @@
                     },
                     children: [
                       /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: { fontSize: "12px", fontWeight: 600, color: textMuted }, children: "To" }),
-                      /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(
-                        "button",
-                        {
-                          type: "button",
-                          onClick: connectNearWallet,
-                          style: {
-                            display: "inline-flex",
-                            alignItems: "center",
-                            gap: "6px",
-                            background: "transparent",
-                            border: "none",
-                            color: nearAccountId ? textMain : accent,
-                            padding: "2px 4px",
-                            fontSize: "12px",
-                            fontWeight: 600,
-                            cursor: "pointer"
-                          },
-                          children: [
-                            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(ChainLogo, { blockchain: "near", size: 15 }),
-                            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { children: nearAccountId ? shortAddr(nearAccountId) : "Connect" })
-                          ]
-                        }
-                      )
+                      /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { style: { display: "inline-flex", alignItems: "center", gap: "4px" }, children: [
+                        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(
+                          "button",
+                          {
+                            type: "button",
+                            onClick: connectNearWallet,
+                            style: {
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "6px",
+                              background: "transparent",
+                              border: "none",
+                              color: nearAccountId ? textMain : accent,
+                              padding: "2px 4px",
+                              fontSize: "12px",
+                              fontWeight: 600,
+                              cursor: "pointer"
+                            },
+                            children: [
+                              /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(ChainLogo, { blockchain: "near", size: 15 }),
+                              /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { children: nearAccountId ? shortAddr(nearAccountId) : "Connect" })
+                            ]
+                          }
+                        ),
+                        nearAccountId && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
+                          "button",
+                          {
+                            type: "button",
+                            title: "Disconnect NEAR wallet",
+                            "aria-label": "Disconnect NEAR wallet",
+                            onClick: disconnectNearWallet,
+                            style: {
+                              display: "inline-flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              width: "20px",
+                              height: "20px",
+                              padding: 0,
+                              background: "transparent",
+                              border: "none",
+                              borderRadius: "9999px",
+                              color: textMuted,
+                              cursor: "pointer"
+                            },
+                            children: /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("svg", { width: "13", height: "13", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round", children: [
+                              /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("path", { d: "M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" }),
+                              /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("polyline", { points: "16 17 21 12 16 7" }),
+                              /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("line", { x1: "21", y1: "12", x2: "9", y2: "12" })
+                            ] })
+                          }
+                        )
+                      ] })
                     ]
                   }
                 ),
@@ -30167,7 +30253,13 @@
                         textAlign: "right",
                         color: quoteLoading ? textMuted : textMain
                       },
-                      children: quoteLoading ? "..." : expectedOutFormatted
+                      children: quoteLoading ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
+                        "span",
+                        {
+                          className: "skeleton",
+                          style: { width: "84px", height: "24px", borderRadius: "8px", display: "inline-block" }
+                        }
+                      ) : expectedOutFormatted
                     }
                   )
                 ] }),
@@ -30324,12 +30416,10 @@
             {
               style: {
                 marginTop: "10px",
-                padding: "8px 10px",
-                borderRadius: "10px",
-                background: "rgba(239,68,68,0.12)",
-                border: "1px solid rgba(239,68,68,0.3)",
-                color: "#fca5a5",
-                fontSize: "12px"
+                color: "var(--neg, #dc2626)",
+                fontSize: "12.5px",
+                fontWeight: 500,
+                lineHeight: 1.45
               },
               children: quoteError
             }
@@ -30339,12 +30429,10 @@
             {
               style: {
                 marginTop: "10px",
-                padding: "8px 10px",
-                borderRadius: "10px",
-                background: "rgba(239,68,68,0.12)",
-                border: "1px solid rgba(239,68,68,0.3)",
-                color: "#fca5a5",
-                fontSize: "12px"
+                color: "var(--neg, #dc2626)",
+                fontSize: "12.5px",
+                fontWeight: 500,
+                lineHeight: 1.45
               },
               children: txErrorMsg
             }
@@ -30354,12 +30442,10 @@
             {
               style: {
                 marginTop: "10px",
-                padding: "8px 10px",
-                borderRadius: "10px",
-                background: "rgba(52,211,153,0.12)",
-                border: "1px solid rgba(52,211,153,0.3)",
-                color: "#6ee7b7",
-                fontSize: "12px"
+                color: isDark ? "#60a5fa" : "#2563eb",
+                fontSize: "12.5px",
+                fontWeight: 500,
+                lineHeight: 1.45
               },
               children: txStatusMsg
             }
@@ -30379,11 +30465,13 @@
               style: {
                 marginTop: "14px",
                 width: "100%",
-                padding: "13px 16px",
-                borderRadius: "12px",
-                border: "none",
-                background: accent,
-                color: "#0e0e16",
+                padding: "13px 18px",
+                borderRadius: "9999px",
+                border: "1px solid var(--accent-btn-border, rgba(9, 9, 11, 0.10))",
+                background: "var(--accent-grad, linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(244, 244, 247, 0.92) 100%))",
+                color: "var(--on-accent, #09090b)",
+                boxShadow: "var(--accent-btn-shadow, 0 2px 8px rgba(9, 9, 11, 0.08))",
+                backdropFilter: "blur(12px)",
                 fontWeight: 700,
                 fontSize: "14px",
                 cursor: submitting ? "wait" : "pointer",
@@ -30399,7 +30487,9 @@
               style: {
                 position: "fixed",
                 inset: 0,
-                background: "rgba(0,0,0,0.65)",
+                background: "rgba(0,0,0,0.22)",
+                backdropFilter: "blur(4px)",
+                WebkitBackdropFilter: "blur(4px)",
                 zIndex: 9999,
                 display: "flex",
                 alignItems: "center",
@@ -30417,6 +30507,7 @@
                     background: bgCard,
                     border: `1px solid ${borderCol}`,
                     borderRadius: "18px",
+                    boxShadow: "0 20px 50px rgba(0,0,0,0.16)",
                     display: "flex",
                     flexDirection: "column",
                     overflow: "hidden"

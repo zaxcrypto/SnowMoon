@@ -30,8 +30,13 @@ import { NearIntentsClient } from "./near_intents.ts";
 import { FloatPoolAdvanceOrchestrator } from "./float_pool.ts";
 import { DeliverableVault, LocalPrivateObjectStorage } from "./deliverables.ts";
 import { MonitoringService } from "./monitoring.ts";
-import { DeterministicSpendingPolicyEngine } from "./spending_policy.ts";
+import {
+  DEFAULT_SPENDING_POLICY,
+  DeterministicSpendingPolicyEngine,
+  type SpendingPolicyConfig,
+} from "./spending_policy.ts";
 import { NearAiBrainOrchestrator } from "./brain_audit.ts";
+import { emitLiveTrace, liveTraceBus, type LiveTraceEvent } from "./live_trace.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -118,6 +123,7 @@ export const PRODUCTION_ROUTE_POLICY = {
       "/api/outlayer/poll",
       "/api/outlayer/verify-attestation",
       "/api/approvals/decide",
+      "/api/spending-policy",
     ],
     workerBearerAuthenticated: [
       "/api/workforce/workers/availability",
@@ -246,7 +252,8 @@ export function buildSystemSnapshot(
   policyAdapter: OutLayerPolicyAdapter,
   aiAdapter: AIWorkerAdapter,
   nearRpcAdapter?: NearMainnetRpcAdapter,
-  verificationEngine?: VerificationEngine
+  verificationEngine?: VerificationEngine,
+  spendingPolicy?: DeterministicSpendingPolicyEngine
 ) {
   const jobs = Array.from(engine.jobs.values()).sort((a, b) => b.seq - a.seq);
   const advances = Array.from(engine.advances.values()).sort(
@@ -290,6 +297,13 @@ export function buildSystemSnapshot(
       liveTxBroadcastingEnabled: config.liveTxBroadcastingEnabled,
       isProductionMode: config.isProductionMode,
       restrictedBetaMode: config.restrictedBetaMode,
+      pilot: {
+        enabled: config.pilot.enabled,
+        maxJobUsdcAtomic: config.pilot.maxJobUsdcAtomic.toString(),
+        floatPoolEnabled: config.pilot.floatPoolEnabled,
+        allowlistActive: config.pilot.allowedAccounts.length > 0,
+        allowlistCount: config.pilot.allowedAccounts.length,
+      },
       allowSandboxDemoEndpoints: config.allowSandboxDemoEndpoints,
       coreContractId: config.coreContractId,
       auditContractId: config.auditContractId,
@@ -350,6 +364,7 @@ export function buildSystemSnapshot(
     jobs,
     advances,
     approvals,
+    spendingPolicy: spendingPolicy ? spendingPolicy.getConfig() : DEFAULT_SPENDING_POLICY,
     anchors,
     verifications: verificationEngine ? verificationEngine.listSubmissions() : [],
     events: engine.events.slice(0, 60),
@@ -366,7 +381,10 @@ export function createSnowMoonApp(
   const config = customConfig ?? loadConfig();
   const engine = new SnowMoonEngine(config);
   const policyAdapter = new OutLayerPolicyAdapter(config, engine);
-  const aiAdapter = new AIWorkerAdapter(config);
+  const spendingPolicy = new DeterministicSpendingPolicyEngine({
+    humanApprovalThresholdAtomic: config.autoApproveLimitUsdc.toString(),
+  });
+  const aiAdapter = new AIWorkerAdapter(config, fetch, spendingPolicy);
   const nearRpcAdapter = new NearMainnetRpcAdapter(config);
   const walletSessionSecret = config.isProductionMode
     ? (config.secrets.walletSessionSecret || process.env.WALLET_SESSION_SECRET || "").trim()
@@ -412,7 +430,25 @@ export function createSnowMoonApp(
           walletSessionSecret || "snowmoon-dev-deliverable-secret"
         );
   const monitoring = new MonitoringService();
-  const spendingPolicy = new DeterministicSpendingPolicyEngine();
+  const applyPersistedSpendingPolicy = (): void => {
+    const saved = repo.getCollection<Record<string, unknown>>("spendingPolicy");
+    const row = saved[0];
+    if (!row) return;
+    spendingPolicy.updateConfig({
+      perTaskBudgetAtomic: row.perTaskBudgetAtomic as string | undefined,
+      perTxLimitAtomic: row.perTxLimitAtomic as string | undefined,
+      dailyLimitAtomic: row.dailyLimitAtomic as string | undefined,
+      jobTotalLimitAtomic: row.jobTotalLimitAtomic as string | undefined,
+      humanApprovalThresholdAtomic: row.humanApprovalThresholdAtomic as string | undefined,
+      allowedMerchants: Array.isArray(row.allowedMerchants)
+        ? (row.allowedMerchants as string[])
+        : undefined,
+      blockedCategories: Array.isArray(row.blockedCategories)
+        ? (row.blockedCategories as string[])
+        : undefined,
+    });
+  };
+  applyPersistedSpendingPolicy();
   const brainOrchestrator = new NearAiBrainOrchestrator();
   const nearRateBuckets = new Map<string, number[]>();
   const startedAtMs = Date.now();
@@ -431,6 +467,7 @@ export function createSnowMoonApp(
           workforceEngine.reloadFromRepo();
           verificationEngine.reloadFromRepo();
           settlementEngine.reloadFromRepo();
+          applyPersistedSpendingPolicy();
         }
         enginesHydrated = true;
       })().finally(() => {
@@ -619,6 +656,64 @@ export function createSnowMoonApp(
         return;
       }
 
+      if (
+        config.pilot.enabled &&
+        !config.pilot.floatPoolEnabled &&
+        method === "POST" &&
+        new Set([
+          "/api/near/float/prepare-deposit",
+          "/api/near/float/prepare-withdraw",
+          "/api/near/float/prepare-advance",
+          "/api/jobs/advance",
+          "/api/float/deposit",
+          "/api/float/withdraw",
+        ]).has(pathname)
+      ) {
+        metrics.errors4xx += 1;
+        logStructuredEvent("warn", "pilot_float_pool_blocked", {
+          correlationId,
+          method,
+          pathname,
+        });
+        sendJson(
+          res,
+          403,
+          {
+            ok: false,
+            pilotMode: true,
+            floatPoolEnabled: false,
+            error:
+              "ERR_PILOT_FLOAT_POOL_DISABLED: FloatPool is intentionally unfunded and disabled during the Controlled Escrow-Funded Pilot. Use direct USDC escrow funding instead.",
+          },
+          reqOrigin,
+          undefined,
+          correlationId
+        );
+        return;
+      }
+
+      const assertPilotAccountAllowed = (accountId: string): void => {
+        if (!config.pilot.enabled || config.pilot.allowedAccounts.length === 0) return;
+        const normalized = accountId.trim().toLowerCase();
+        if (!config.pilot.allowedAccounts.includes(normalized)) {
+          throw new Error(
+            `ERR_PILOT_ACCOUNT_NOT_ALLOWLISTED: Account ${accountId} is not allowlisted for the Controlled Mainnet Pilot.`
+          );
+        }
+      };
+
+      const assertPilotJobCap = (amountAtomicRaw: string): void => {
+        if (!config.pilot.enabled || config.pilot.maxJobUsdcAtomic <= 0n) return;
+        const trimmed = String(amountAtomicRaw || "").trim();
+        if (!/^\d+$/.test(trimmed)) return; // Let downstream schema validator emit ERR_INVALID_AMOUNT
+        const amount = BigInt(trimmed);
+        if (amount > config.pilot.maxJobUsdcAtomic) {
+          throw new Error(
+            `ERR_PILOT_JOB_CAP_EXCEEDED: Job amount ${amount.toString()} exceeds Controlled Pilot limit (${config.pilot.maxJobUsdcAtomic.toString()} atomic USDC).`
+          );
+        }
+      };
+
       // 1. Health & full state snapshot
       if (method === "GET" && pathname === "/api/state") {
         if (
@@ -631,7 +726,15 @@ export function createSnowMoonApp(
         sendJson(
           res,
           200,
-          buildSystemSnapshot(config, engine, policyAdapter, aiAdapter, nearRpcAdapter, verificationEngine)
+          buildSystemSnapshot(
+            config,
+            engine,
+            policyAdapter,
+            aiAdapter,
+            nearRpcAdapter,
+            verificationEngine,
+            spendingPolicy
+          )
         );
         return;
       }
@@ -870,6 +973,8 @@ export function createSnowMoonApp(
             ? req.headers["x-wallet-session"]
             : undefined;
         walletSessionManager.assertAuthorizedCustomer(token, customerAccountId);
+        assertPilotAccountAllowed(customerAccountId);
+        assertPilotJobCap(String(body.customerPaymentUsdcAtomic || ""));
         const result = await escrowTracker.prepareFundJob(nearRpcAdapter, config, {
           customerAccountId,
           operatorAccountId: body.operatorAccountId
@@ -906,6 +1011,7 @@ export function createSnowMoonApp(
             ? req.headers["x-wallet-session"]
             : undefined;
         walletSessionManager.assertAuthorizedCustomer(token, customerAccountId);
+        assertPilotAccountAllowed(customerAccountId);
         const record = escrowTracker.submitSignedTransaction({
           intentId: String(body.intentId || ""),
           txHash: String(body.txHash || ""),
@@ -1129,6 +1235,39 @@ export function createSnowMoonApp(
         return;
       }
 
+      if (method === "GET" && pathname === "/api/jobs/trace") {
+        const jobId = parsedUrl.searchParams.get("jobId") || undefined;
+        sendJson(res, 200, { ok: true, events: liveTraceBus.getTrace(jobId) }, reqOrigin);
+        return;
+      }
+
+      if (method === "GET" && pathname === "/api/jobs/trace/stream") {
+        const jobIdFilter = (parsedUrl.searchParams.get("jobId") || "").trim();
+        res.writeHead(200, {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache, no-transform",
+          Connection: "keep-alive",
+          "X-Accel-Buffering": "no",
+        });
+        const sendEvt = (evt: LiveTraceEvent) => {
+          if (jobIdFilter && evt.jobId !== jobIdFilter) return;
+          res.write(`data: ${JSON.stringify(evt)}\n\n`);
+        };
+        for (const existing of liveTraceBus.getTrace(jobIdFilter || undefined)) {
+          sendEvt(existing);
+        }
+        const onTrace = (evt: LiveTraceEvent) => sendEvt(evt);
+        liveTraceBus.on("trace", onTrace);
+        const keepAlive = setInterval(() => {
+          res.write(`: ping\n\n`);
+        }, 15_000);
+        req.on("close", () => {
+          clearInterval(keepAlive);
+          liveTraceBus.off("trace", onTrace);
+        });
+        return;
+      }
+
       if (method === "GET" && pathname === "/api/workforce/jobs/discover") {
         const jobId = parsedUrl.searchParams.get("jobId") || "";
         const workers = workforceEngine.discoverWorkersForJob(jobId);
@@ -1268,16 +1407,32 @@ export function createSnowMoonApp(
         workforceEngine.assertWorkerAuthorized(workerId, headerToken, config.isProductionMode);
         let job;
         let submission;
+        const execJobId = String(body.jobId || "");
+        emitLiveTrace({
+          jobId: execJobId,
+          stage: "workforce",
+          status: "info",
+          title: `Worker ${workerId} starting execution`,
+        });
         try {
           job = await workforceEngine.executeJob({
-            jobId: String(body.jobId || ""),
+            jobId: execJobId,
             workerId,
             aiAdapter,
             outlayerAdapter: outlayerExecAdapter,
             requireLiveOutlayer:
               config.isProductionMode && config.walletMode === "outlayer",
-            maxRetries: body.maxRetries !== undefined ? Number(body.maxRetries) : 1,
-            timeoutMs: body.timeoutMs !== undefined ? Number(body.timeoutMs) : 20_000,
+            maxRetries: body.maxRetries !== undefined ? Number(body.maxRetries) : 0,
+            timeoutMs: body.timeoutMs !== undefined ? Number(body.timeoutMs) : 240_000,
+          });
+          emitLiveTrace({
+            jobId: job.jobId,
+            stage: "tee",
+            status: job.outlayerAttestationVerified ? "ok" : "info",
+            title: `OutLayer TEE (${job.outlayerMode || "direct"})`,
+            detail: job.outlayerAttestationVerified
+              ? "Independent TEE WASM attestation verified"
+              : "Completed without live OutLayer attestation",
           });
           if (job.outlayerMode === "live_outlayer" && !job.outlayerAttestationVerified) {
             throw new Error(
@@ -1296,6 +1451,36 @@ export function createSnowMoonApp(
                   deadlineSec: job.deadlineSec,
                 })
               : null;
+          let deliverableRecord = null;
+          if (job.output && job.evidenceHash) {
+            const markdownText =
+              typeof job.output.result === "string" && job.output.result.trim()
+                ? job.output.result
+                : JSON.stringify(job.output, null, 2);
+            deliverableRecord = await deliverableVault.storeDeliverableAsync({
+              jobId: job.jobId,
+              customerAccountId: job.customerAccountId,
+              filename: `deliverable-${job.jobId.slice(0, 10)}.md`,
+              mimeType: "text/markdown",
+              content: Buffer.from(markdownText, "utf8"),
+            });
+            emitLiveTrace({
+              jobId: job.jobId,
+              stage: "verification",
+              status: "ok",
+              title: `Evidence hashed & deliverable vaulted`,
+              detail: `${deliverableRecord.filename} (${deliverableRecord.sizeBytes} bytes) · ${job.evidenceHash}`,
+            });
+          }
+        } catch (err) {
+          emitLiveTrace({
+            jobId: execJobId,
+            stage: "workforce",
+            status: "error",
+            title: "Execution failed",
+            detail: err instanceof Error ? err.message : String(err),
+          });
+          throw err;
         } finally {
           await repo.flushPending();
         }
@@ -1499,6 +1684,7 @@ export function createSnowMoonApp(
         }
         const customerAccountId = wfJob.customerAccountId;
         const sessionAccountId = assertCustomerOrOperatorSession(customerAccountId);
+        assertPilotAccountAllowed(customerAccountId);
         const kind = String(body.kind || "PAYOUT_ACCEPT_DELIVERY") as
           | "PAYOUT_ACCEPT_DELIVERY"
           | "CUSTOMER_REFUND";
@@ -1580,6 +1766,35 @@ export function createSnowMoonApp(
         return;
       }
 
+      const ensureDeliverableHydrated = async (wfJob: NonNullable<ReturnType<typeof workforceEngine.getJob>>) => {
+        if (deliverableVault.getDeliverableByJob(wfJob.jobId) || !wfJob.output) return;
+        const markdownText =
+          typeof wfJob.output.result === "string" && wfJob.output.result.trim()
+            ? wfJob.output.result
+            : JSON.stringify(wfJob.output, null, 2);
+        await deliverableVault.storeDeliverableAsync({
+          jobId: wfJob.jobId,
+          customerAccountId: wfJob.customerAccountId,
+          filename: `deliverable-${wfJob.jobId.slice(0, 10)}.md`,
+          mimeType: "text/markdown",
+          content: Buffer.from(markdownText, "utf8"),
+        });
+        if (wfJob.state === "SETTLED") {
+          deliverableVault.unlockAfterConfirmedSettlement({
+            jobId: wfJob.jobId,
+            customerAccountId: wfJob.customerAccountId,
+            jobState: "SETTLED",
+            settlementConfirmed: true,
+            settlementKind: "PAYOUT_ACCEPT_DELIVERY",
+          });
+        } else if (
+          wfJob.state === "REJECTED" ||
+          verificationEngine.listSubmissions().find((s) => s.jobId === wfJob.jobId)?.verificationStatus === "REJECTED"
+        ) {
+          deliverableVault.markRejected(wfJob.jobId, wfJob.customerAccountId, "Customer rejected delivery");
+        }
+      };
+
       if (method === "GET" && pathname.startsWith("/api/deliverables/") && pathname.endsWith("/preview")) {
         const parts = pathname.split("/");
         const jobId = decodeURIComponent(parts[3] || "");
@@ -1589,6 +1804,7 @@ export function createSnowMoonApp(
         if (sessionAccountId !== wfJob.customerAccountId) {
           throw new Error("ERR_CUSTOMER_OWNERSHIP_REQUIRED: Only the job customer may preview deliverable.");
         }
+        await ensureDeliverableHydrated(wfJob);
         const preview = deliverableVault.getCustomerPreview(jobId, sessionAccountId);
         sendJson(res, 200, { ok: true, preview }, reqOrigin);
         return;
@@ -1604,6 +1820,7 @@ export function createSnowMoonApp(
         if (sessionAccountId !== wfJob.customerAccountId) {
           throw new Error("ERR_CUSTOMER_OWNERSHIP_REQUIRED: Only the job customer may reject deliverable.");
         }
+        await ensureDeliverableHydrated(wfJob);
         const reason = String(body.reason || "Customer rejected preview").trim() || "Customer rejected preview";
         const deliverable = deliverableVault.markRejected(jobId, sessionAccountId, reason);
         workforceEngine.updateJobState(jobId, "REJECTED");
@@ -1632,6 +1849,7 @@ export function createSnowMoonApp(
         if (sessionAccountId !== wfJob.customerAccountId) {
           throw new Error("ERR_CUSTOMER_OWNERSHIP_REQUIRED: Only the job customer may request download.");
         }
+        await ensureDeliverableHydrated(wfJob);
         const settlement = settlementEngine.getSettlementByJob(jobId);
         const signed = deliverableVault.issueSignedDownloadToken({
           jobId,
@@ -2029,6 +2247,7 @@ export function createSnowMoonApp(
           authToken,
           customerAccountId
         );
+        assertPilotAccountAllowed(customerAccountId);
         const depositAddress = String(body.depositAddress || "");
         const prepared = intentsClient.prepareCoreEscrowFromIntent(nearRpcAdapter, {
           depositAddress,
@@ -2037,6 +2256,7 @@ export function createSnowMoonApp(
           termsHash: String(body.termsHash || "0x" + "00".repeat(32)),
           expectedCustomerAccount: customerAccountId,
         });
+        assertPilotJobCap(prepared.escrowAmountAtomic);
         await repo.flushPending();
         sendJson(
           res,
@@ -2107,6 +2327,13 @@ export function createSnowMoonApp(
           {
             ok: true,
             restrictedBetaMode: config.restrictedBetaMode,
+            pilot: {
+              enabled: config.pilot.enabled,
+              maxJobUsdcAtomic: config.pilot.maxJobUsdcAtomic.toString(),
+              floatPoolEnabled: config.pilot.floatPoolEnabled,
+              allowlistActive: config.pilot.allowedAccounts.length > 0,
+              allowlistCount: config.pilot.allowedAccounts.length,
+            },
             uptimeSec: Math.floor((Date.now() - startedAtMs) / 1000),
             network: config.network,
             isProductionMode: config.isProductionMode,
@@ -2138,6 +2365,13 @@ export function createSnowMoonApp(
           {
             ok: true,
             restrictedBetaMode: config.restrictedBetaMode,
+            pilot: {
+              enabled: config.pilot.enabled,
+              maxJobUsdcAtomic: config.pilot.maxJobUsdcAtomic.toString(),
+              floatPoolEnabled: config.pilot.floatPoolEnabled,
+              allowlistActive: config.pilot.allowedAccounts.length > 0,
+              allowlistCount: config.pilot.allowedAccounts.length,
+            },
             uptimeSec: Math.floor((Date.now() - startedAtMs) / 1000),
             requests: { ...metrics },
             counts: {
@@ -2394,7 +2628,15 @@ export function createSnowMoonApp(
         sendJson(res, 200, {
           ok: true,
           result,
-          state: buildSystemSnapshot(config, engine, policyAdapter, aiAdapter),
+          state: buildSystemSnapshot(
+            config,
+            engine,
+            policyAdapter,
+            aiAdapter,
+            nearRpcAdapter,
+            verificationEngine,
+            spendingPolicy
+          ),
         });
         return;
       }
@@ -2448,7 +2690,15 @@ export function createSnowMoonApp(
         sendJson(res, 200, {
           ok: true,
           result,
-          state: buildSystemSnapshot(config, engine, policyAdapter, aiAdapter),
+          state: buildSystemSnapshot(
+            config,
+            engine,
+            policyAdapter,
+            aiAdapter,
+            nearRpcAdapter,
+            verificationEngine,
+            spendingPolicy
+          ),
         });
         return;
       }
@@ -2490,7 +2740,100 @@ export function createSnowMoonApp(
         sendJson(res, 200, {
           ok: true,
           result,
-          state: buildSystemSnapshot(config, engine, policyAdapter, aiAdapter),
+          state: buildSystemSnapshot(
+            config,
+            engine,
+            policyAdapter,
+            aiAdapter,
+            nearRpcAdapter,
+            verificationEngine,
+            spendingPolicy
+          ),
+        });
+        return;
+      }
+
+      // 9b. Read or update deterministic Spending Policy limits (Approvals dashboard)
+      if (method === "GET" && pathname === "/api/spending-policy") {
+        sendJson(res, 200, {
+          ok: true,
+          policy: spendingPolicy.getConfig(),
+        });
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/spending-policy") {
+        const body = await readJsonBody(req);
+        const updatedBy = String(
+          body.updatedBy ||
+            (config.isProductionMode ? config.mainnetAdminAccountId : config.operatorAccountId)
+        );
+        const walletToken =
+          typeof req.headers["x-wallet-session"] === "string"
+            ? req.headers["x-wallet-session"]
+            : undefined;
+        walletSessionManager.assertAuthorizedCustomer(walletToken, updatedBy);
+        if (config.isProductionMode) {
+          if (
+            updatedBy !== config.mainnetAdminAccountId &&
+            updatedBy !== config.mainnetAuditOperatorAccountId
+          ) {
+            throw new Error(
+              `ERR_NOT_OPERATOR_AUTHORITY: Only authorized operator (${config.mainnetAdminAccountId}) can update spending policy in production.`
+            );
+          }
+        }
+        const patch: Partial<SpendingPolicyConfig> =
+          body.resetDefaults === true
+            ? {
+                ...DEFAULT_SPENDING_POLICY,
+                humanApprovalThresholdAtomic: config.autoApproveLimitUsdc.toString(),
+              }
+            : {
+                perTaskBudgetAtomic:
+                  body.perTaskBudgetAtomic !== undefined
+                    ? String(body.perTaskBudgetAtomic)
+                    : undefined,
+                perTxLimitAtomic:
+                  body.perTxLimitAtomic !== undefined ? String(body.perTxLimitAtomic) : undefined,
+                dailyLimitAtomic:
+                  body.dailyLimitAtomic !== undefined ? String(body.dailyLimitAtomic) : undefined,
+                jobTotalLimitAtomic:
+                  body.jobTotalLimitAtomic !== undefined
+                    ? String(body.jobTotalLimitAtomic)
+                    : undefined,
+                humanApprovalThresholdAtomic:
+                  body.humanApprovalThresholdAtomic !== undefined
+                    ? String(body.humanApprovalThresholdAtomic)
+                    : undefined,
+                allowedMerchants: Array.isArray(body.allowedMerchants)
+                  ? body.allowedMerchants.map((item) => String(item))
+                  : undefined,
+                blockedCategories: Array.isArray(body.blockedCategories)
+                  ? body.blockedCategories.map((item) => String(item))
+                  : undefined,
+              };
+        const updated = spendingPolicy.updateConfig(patch);
+        await repo.saveCollectionAsync("spendingPolicy", [
+          {
+            id: "default",
+            ...updated,
+            updatedBy,
+            updatedAt: new Date().toISOString(),
+          },
+        ]);
+        sendJson(res, 200, {
+          ok: true,
+          policy: updated,
+          state: buildSystemSnapshot(
+            config,
+            engine,
+            policyAdapter,
+            aiAdapter,
+            nearRpcAdapter,
+            verificationEngine,
+            spendingPolicy
+          ),
         });
         return;
       }
@@ -2775,7 +3118,9 @@ export function createSnowMoonApp(
         message.startsWith("ERR_WORKER_AUTH")
         ? 401
         : message.startsWith("ERR_ACCOUNT_IMPERSONATION_BLOCKED") ||
-            message.startsWith("ERR_PRIVATE_KEY_FORBIDDEN")
+            message.startsWith("ERR_PRIVATE_KEY_FORBIDDEN") ||
+            message.startsWith("ERR_PILOT_ACCOUNT_NOT_ALLOWLISTED") ||
+            message.startsWith("ERR_PILOT_FLOAT_POOL_DISABLED")
           ? 403
           : message.startsWith("ERR_PAYLOAD_TOO_LARGE")
             ? 413

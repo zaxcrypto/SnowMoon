@@ -206,12 +206,79 @@ export function generateRestrictedPreview(
     mimeType.startsWith("text/") ||
     mimeType === "application/csv"
   ) {
-    const lines = content.toString("utf8").split(/\r?\n/);
-    const maxLines = mimeType === "text/x-rust" || mimeType === "text/typescript" ? 12 : 6;
-    const excerpt = lines.slice(0, maxLines).join("\n").slice(0, 420);
+    const rawText = content.toString("utf8");
+    // Strip internal execution-log blockquotes and any raw XML tool-call tags so preview shows actual AI deliverable content
+    const cleanedLines = rawText
+      .replace(/<function_calls>[\s\S]*?<\/function_calls>/gi, "")
+      .split(/\r?\n/)
+      .filter((line) => {
+        const t = line.trim();
+        return !(
+          t.startsWith("> **Execution Mode:**") ||
+          t.startsWith("> **Endpoint:**") ||
+          t.startsWith("> **Model:**") ||
+          t.startsWith("> **Routing:**") ||
+          t.startsWith("> **Agentic Tools Executed") ||
+          t.startsWith("> **Token Usage:**") ||
+          t.startsWith("> **Prompt Cache:**")
+        );
+      });
+    // Trim leading blank lines after stripping metadata header
+    while (cleanedLines.length > 0 && !cleanedLines[0].trim()) cleanedLines.shift();
+    const lines = cleanedLines.length > 0 ? cleanedLines : rawText.split(/\r?\n/);
+    const cleanFull = lines.join("\n");
+
+    // Smart Security-Audit Preview: surface Executive Summary + Top Findings teasers (never code/fixes!)
+    const isAuditReport =
+      /##\s+Top Findings Summary/i.test(cleanFull) ||
+      /###\s+\d+\.\s+/i.test(cleanFull) ||
+      /Security Audit Report/i.test(cleanFull);
+    if (isAuditReport && mimeType !== "text/x-rust" && mimeType !== "text/typescript") {
+      // Strip fenced code blocks so vulnerable snippets & concrete fixes are never leaked before settlement
+      const noCodeText = cleanFull.replace(/```[\s\S]*?```/g, "").trim();
+      const execMatch = noCodeText.match(/##\s+Executive Summary\s*\n+([\s\S]*?)(?=\n##\s+|$)/i);
+      const topSummaryMatch = noCodeText.match(/##\s+Top Findings Summary\s*\n+([\s\S]*?)(?=\n##\s+|$)/i);
+      const headingMatches = [...noCodeText.matchAll(/^###\s+(.+)$/gm)].map((m) => `- ${m[1].trim()}`);
+
+      const titleLine = lines.find((l) => l.trim().startsWith("# ")) || "# Security Audit Report";
+      const previewParts: string[] = [titleLine];
+      if (execMatch?.[1]?.trim()) {
+        previewParts.push(`\n## Executive Summary\n${execMatch[1].trim().slice(0, 420)}`);
+      }
+      if (topSummaryMatch?.[1]?.trim()) {
+        const bullets = topSummaryMatch[1]
+          .split(/\r?\n/)
+          .filter((l) => l.trim().startsWith("-"))
+          .slice(0, 4);
+        if (bullets.length > 0) {
+          previewParts.push(`\n## Key Risks Detected (Preview)\n${bullets.join("\n")}`);
+        }
+      } else if (headingMatches.length > 0) {
+        previewParts.push(`\n## Key Risks Detected (Preview)\n${headingMatches.slice(0, 4).join("\n")}`);
+      }
+      const rpcMatch = noCodeText.match(/##\s+Live NEAR Mainnet RPC Verification\s*\n+([\s\S]*?)(?=\n##\s+|$)/i);
+      if (rpcMatch?.[1]?.trim() && !/not performed/i.test(rpcMatch[1])) {
+        previewParts.push(`\n## Live NEAR Mainnet RPC Verification\n${rpcMatch[1].trim().slice(0, 260)}`);
+      }
+      const teaserText = previewParts.join("\n").trim();
+      if (teaserText.length > 80) {
+        const findingCount = headingMatches.length || (topSummaryMatch?.[1]?.split(/\r?\n/).filter((l) => l.trim().startsWith("-")).length ?? 0);
+        const lockNote = findingCount > 0
+          ? `\n\n... [${findingCount} findings with vulnerable code & concrete fixes locked until on-chain settlement]`
+          : `\n\n... [Full detailed report & remediation locked until on-chain settlement]`;
+        return {
+          previewSummary: `${safeName} (${lines.length} lines, ${content.length} bytes) — ${findingCount || "audit"} findings preview`,
+          previewText: `${teaserText}${lockNote}${watermark}`,
+        };
+      }
+    }
+
+    const baseMaxLines = mimeType === "text/x-rust" || mimeType === "text/typescript" ? 16 : 14;
+    const maxLines = Math.min(baseMaxLines, Math.max(4, Math.floor(lines.length * 0.55)));
+    const excerpt = lines.slice(0, maxLines).join("\n").slice(0, 950).trim();
     return {
-      previewSummary: `${safeName} (${lines.length} lines, ${content.length} bytes) — limited sample`,
-      previewText: `${excerpt}${lines.length > maxLines ? "\n... [remaining lines locked until settlement]" : ""}${watermark}`,
+      previewSummary: `${safeName} (${lines.length} lines, ${content.length} bytes) — deliverable preview`,
+      previewText: `${excerpt || "Deliverable generated and vaulted."}${lines.length > maxLines ? "\n\n... [Full detailed report & remediation locked until on-chain settlement]" : ""}${watermark}`,
     };
   }
 

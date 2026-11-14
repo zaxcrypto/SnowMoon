@@ -346,7 +346,7 @@ test("12. Balance pre-checks reject insufficient USDC/NEAR, and reconciliation r
       const base = await super.inspectMainnetAccount(accountId);
       return {
         ...base,
-        amountYocto: "10000000000000000000000", // 0.01 NEAR (< 0.05 NEAR buffer)
+        amountYocto: "2000000000000000000000", // 0.002 NEAR (< 0.005 NEAR buffer)
         usdcBalanceAtomic: "1000000", // $1.00 USDC
       };
     }

@@ -51,3 +51,6 @@ near/.cargo/config.local.toml
 winsdk_*/
 nasm*/
 *.nupkg
+
+# snowmoon local runtime data
+snowmoon/data/

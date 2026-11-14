@@ -17,16 +17,29 @@ interface SnowMoonWalletBridge {
 let selector: WalletSelector | null = null;
 let modal: WalletSelectorModal | null = null;
 
-function mapActions(actions: Array<{ type: "FunctionCall"; methodName: string; args: Record<string, unknown>; gas: string; deposit: string }>): Action[] {
-  return actions.map((a) => ({
-    type: "FunctionCall",
-    params: {
-      methodName: a.methodName,
-      args: a.args,
-      gas: a.gas,
-      deposit: a.deposit,
-    },
-  }));
+function mapActions(actions: Array<any>, walletId?: string): Action[] {
+  return actions.map((a) => {
+    const p = a?.params ?? a;
+    if (walletId === "meteor-wallet") {
+      return {
+        functionCall: {
+          methodName: p.methodName,
+          args: new TextEncoder().encode(JSON.stringify(p.args || {})),
+          gas: BigInt(p.gas || "100000000000000"),
+          deposit: BigInt(p.deposit ?? p.depositYocto ?? "0"),
+        },
+      } as unknown as Action;
+    }
+    return {
+      type: "FunctionCall",
+      params: {
+        methodName: p.methodName,
+        args: p.args || {},
+        gas: String(p.gas || "100000000000000"),
+        deposit: String(p.deposit ?? p.depositYocto ?? "0"),
+      },
+    };
+  });
 }
 
 const bridge: SnowMoonWalletBridge = {
@@ -100,17 +113,39 @@ const bridge: SnowMoonWalletBridge = {
     const wallet = await selector.wallet();
     const mapped = txs.map((t) => ({
       receiverId: t.receiverId,
-      actions: mapActions(t.actions),
+      actions: mapActions(t.actions, wallet.id),
     }));
     const raw = mapped.length === 1
       ? await wallet.signAndSendTransaction(mapped[0])
       : await wallet.signAndSendTransactions({ transactions: mapped });
 
-    const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
+    const rawObj = raw as Record<string, unknown> | undefined;
+    const list = Array.isArray(raw)
+      ? raw
+      : Array.isArray(rawObj?.outcomes)
+      ? (rawObj.outcomes as unknown[])
+      : Array.isArray(rawObj?.response)
+      ? (rawObj.response as unknown[])
+      : raw
+      ? [raw]
+      : [];
     const txHashes: string[] = [];
     for (const item of list) {
-      const hash = (item as { transaction?: { hash?: string }; transaction_outcome?: { id?: string } })?.transaction?.hash
-        || (item as { transaction_outcome?: { id?: string } })?.transaction_outcome?.id;
+      if (typeof item === "string" && item.trim()) {
+        txHashes.push(item.trim());
+        continue;
+      }
+      const it = item as {
+        hash?: string;
+        txHash?: string;
+        transaction?: { hash?: string };
+        transaction_outcome?: { id?: string };
+      };
+      const hash =
+        it?.transaction?.hash ||
+        it?.transaction_outcome?.id ||
+        it?.hash ||
+        it?.txHash;
       if (hash) txHashes.push(hash);
     }
     return { txHashes, raw };
