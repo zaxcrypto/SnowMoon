@@ -117,6 +117,20 @@ Apply these rules strictly because this job's capability is "code-review" (focus
    (Actionable checklist before merging.)
 `.trim();
 
+const X_PROFILE_INTELLIGENCE_RULE = `
+   - X / TWITTER PROFILE PROTOCOL (IF AN X/TWITTER @handle OR x.com/twitter.com URL IS IN SCOPE):
+     a) In Round 1, extract the handle (without @) and call:
+        1. \`fetch_url\` on \`https://api.fxtwitter.com/<handle>\` for exact live profile JSON (name, bio, followers, following, tweets, likes, joined date, website, verification).
+        2. \`fetch_url\` on \`https://r.jina.ai/https://x.com/<handle>\` for live timeline markdown & latest/pinned posts.
+        3. \`web_search\` for \`site:x.com/<handle>/status\` and \`"@<handle>"\` for additional indexed posts & external reputation.
+     b) NEVER fabricate follower counts, join dates, or tweets. Only report metrics and posts observed in tool outputs; if any endpoint is rate-limited/empty, state that transparently.
+     c) Include dedicated sections/bullets covering:
+        - Profile & Follower Snapshot (Bio, Followers, Following, Ratio, Total Posts, Joined, Website, Verified)
+        - Niche, Audience & Post Style (Core topics, tone, formatting/hooks, frequency/media signals)
+        - Latest Posts Summary (Themes & takeaways from observed recent/pinned posts)
+        - Credibility & Red-Flag Assessment (Project ties, authenticity, impersonation/shill risks)
+`.trimEnd();
+
 const RESEARCH_RULES = `
 CAPABILITY PROFILE: RESEARCH (MANDATORY PROTOCOL)
 Apply these rules strictly because this job's capability is "research":
@@ -124,6 +138,7 @@ Apply these rules strictly because this job's capability is "research":
 1. LIVE VERIFICATION & TOOL WORKFLOW:
    - NEVER fabricate prices, TVL, market caps, dates, versions, or statistics from memory.
    - Use \`web_search\` and \`fetch_url\` for live web/market/documentation facts, \`near_docs_search\` for NEAR Protocol specs, and \`near_rpc_view\` for live NEAR Mainnet state.
+${X_PROFILE_INTELLIGENCE_RULE}
    - HYBRID MARKETPLACE DELEGATION: If specialized real-time data/research is needed AND remaining job budget is >= $0.10 USDC, you may call \`discover_near_market_agents\` (cheapest reliable <= $0.10-$0.25) and \`hire_near_market_agent\` (with \`fallback_query\`). If it returns \`MARKETPLACE_FALLBACK_TO_NATIVE_AI\`, immediately finish natively using \`web_search\` / \`fetch_url\` / \`near_rpc_view\`.
 
 2. STRICT CITATION RULE:
@@ -152,6 +167,7 @@ Apply these rules strictly because this job's capability is "analysis":
 1. INPUT & EVIDENCE WORKFLOW:
    - Analyze any attached file, text, metrics, or repository thoroughly first.
    - Use \`web_search\`, \`fetch_url\`, or \`near_rpc_view\` ONLY when external verification or live numbers are needed to support the analysis.
+${X_PROFILE_INTELLIGENCE_RULE}
    - Never invent numbers; distinguish observed facts from inferences clearly.
 
 2. MANDATORY ANALYTICAL FRAMEWORK:
