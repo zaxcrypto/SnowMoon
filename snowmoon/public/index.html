@@ -1580,10 +1580,15 @@
           <div class="card">
             <div class="form-group" style="margin-bottom:12px;">
               <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:6px;">
-                <label for="job-prompt" style="margin:0;">Task Prompt</label>
+                <label for="job-title" style="margin:0;">Title</label>
                 <button class="btn btn-sm" onclick="openEscrowRecoveryModal()">Manual Escrow Recovery</button>
               </div>
-              <textarea id="job-prompt" rows="4" placeholder="Describe the verifiable AI task..."></textarea>
+              <input id="job-title" type="text" maxlength="120" placeholder="e.g. Audit core.cryptozax.near smart contract" />
+            </div>
+
+            <div class="form-group" style="margin-bottom:12px;">
+              <label for="job-prompt" style="margin-bottom:6px;">Describe Task</label>
+              <textarea id="job-prompt" rows="3" placeholder="Describe what you want audited, reviewed, or researched..."></textarea>
               <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; margin-top:8px;">
                 <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
                   <input id="job-code-file" type="file" accept=".rs,.ts,.tsx,.js,.jsx,.sol,.py,.go,.move,.md,.json,.txt,.toml" style="display:none;" onchange="handleJobCodeFileSelect(this)" />
@@ -1597,10 +1602,18 @@
               </div>
             </div>
 
+            <div class="form-group" style="margin-bottom:12px;">
+              <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:6px;">
+                <label for="job-target-link" style="margin:0;">Target Link / Resource</label>
+                <span id="job-target-link-hint" class="stat-sub">Recommended: GitHub repo URL or NEAR contract ID</span>
+              </div>
+              <input id="job-target-link" type="text" placeholder="Recommended: https://github.com/org/repo or core.cryptozax.near" />
+            </div>
+
             <div class="form-grid" style="margin-bottom:12px;">
               <div class="form-group">
                 <label for="job-capability" style="display:flex; align-items:center; min-height:18px; margin-bottom:6px;">Capability</label>
-                <select id="job-capability" style="height:40px;">
+                <select id="job-capability" style="height:40px;" onchange="updateJobCapabilityHints()">
                   <option value="security-audit" selected>Security Audit</option>
                   <option value="analysis">Analysis</option>
                   <option value="research">Research</option>
@@ -3162,12 +3175,88 @@
       if (hintEl) hintEl.style.display = "";
     }
 
+    const JOB_CAPABILITY_HINTS = {
+      "security-audit": {
+        title: "e.g. Audit core.cryptozax.near smart contract",
+        prompt: "Describe what to audit (vulnerabilities, access control, reentrancy, or leave brief if attaching code/link)...",
+        linkPlaceholder: "Recommended: GitHub repo URL or NEAR contract ID (e.g. https://github.com/org/repo or core.cryptozax.near)",
+        linkHint: "Recommended: GitHub repo URL or NEAR contract ID",
+      },
+      "code-review": {
+        title: "e.g. Review PR #42 escrow settlement refactor",
+        prompt: "Describe what to review (architecture, edge cases, gas/perf, readability, or test gaps)...",
+        linkPlaceholder: "Recommended: GitHub repo or PR URL (e.g. https://github.com/org/repo/pull/42)",
+        linkHint: "Recommended: GitHub repo or Pull Request URL",
+      },
+      "research": {
+        title: "e.g. Research NEAR Intents cross-chain liquidity",
+        prompt: "Describe the research question, topic, or entities to investigate...",
+        linkPlaceholder: "Recommended: Docs URL, protocol site, token address, or @x_handle",
+        linkHint: "Recommended: Docs URL, protocol link, or @handle",
+      },
+      "analysis": {
+        title: "e.g. Analyze cryptozax.near on-chain activity & risk",
+        prompt: "Describe what to analyze (metrics, tokenomics, on-chain state, or comparison)...",
+        linkPlaceholder: "Recommended: NEAR account ID, protocol URL, or dataset link",
+        linkHint: "Recommended: NEAR account, protocol URL, or data link",
+      },
+      "summarization": {
+        title: "e.g. Summarize NEAR AI & x402 specification",
+        prompt: "Paste text or describe the key points/format you want summarized...",
+        linkPlaceholder: "Recommended: Article, blog, whitepaper, or docs URL",
+        linkHint: "Recommended: Article, whitepaper, or docs URL",
+      },
+      "data-extraction": {
+        title: "e.g. Extract structured JSON from protocol docs",
+        prompt: "Specify the fields, schema, or table format you want extracted...",
+        linkPlaceholder: "Recommended: Target web page, JSON endpoint, or API docs URL",
+        linkHint: "Recommended: Web page, JSON, or API docs URL",
+      },
+    };
+
+    function updateJobCapabilityHints() {
+      const capEl = document.getElementById("job-capability");
+      const titleEl = document.getElementById("job-title");
+      const promptEl = document.getElementById("job-prompt");
+      const linkEl = document.getElementById("job-target-link");
+      const linkHintEl = document.getElementById("job-target-link-hint");
+      if (!capEl) return;
+      const hint = JOB_CAPABILITY_HINTS[capEl.value] || JOB_CAPABILITY_HINTS["analysis"];
+      if (titleEl) titleEl.placeholder = hint.title;
+      if (promptEl) promptEl.placeholder = hint.prompt;
+      if (linkEl) linkEl.placeholder = hint.linkPlaceholder;
+      if (linkHintEl) linkHintEl.textContent = hint.linkHint;
+    }
+    updateJobCapabilityHints();
+
     function buildCombinedJobPrompt() {
-      const rawPrompt = document.getElementById("job-prompt").value.trim();
-      if (!attachedJobCodeFile) return rawPrompt;
-      const ext = (attachedJobCodeFile.name.split(".").pop() || "txt").toLowerCase();
-      const base = rawPrompt || `Perform a security audit of the attached code file (${attachedJobCodeFile.name}).`;
-      return `${base}\n\n--- ATTACHED CODE FILE: ${attachedJobCodeFile.name} ---\n\`\`\`${ext}\n${attachedJobCodeFile.content}\n\`\`\``;
+      const title = (document.getElementById("job-title")?.value || "").trim();
+      const rawPrompt = (document.getElementById("job-prompt")?.value || "").trim();
+      const targetLink = (document.getElementById("job-target-link")?.value || "").trim();
+      const capability = (document.getElementById("job-capability")?.value || "analysis").trim();
+
+      let base = rawPrompt;
+      if (!base) {
+        if (attachedJobCodeFile && targetLink) {
+          base = `Perform a ${capability.replace(/-/g, " ")} on ${targetLink} and the attached code file (${attachedJobCodeFile.name}).`;
+        } else if (attachedJobCodeFile) {
+          base = `Perform a ${capability.replace(/-/g, " ")} of the attached code file (${attachedJobCodeFile.name}).`;
+        } else if (targetLink) {
+          base = `Perform a ${capability.replace(/-/g, " ")} on ${targetLink}.`;
+        }
+      }
+
+      const parts = [];
+      if (title) parts.push(`Title: ${title}`);
+      if (base) parts.push(base);
+      if (targetLink) parts.push(`Target Link / Resource: ${targetLink}`);
+      let combined = parts.join("\n\n");
+
+      if (attachedJobCodeFile) {
+        const ext = (attachedJobCodeFile.name.split(".").pop() || "txt").toLowerCase();
+        combined += `\n\n--- ATTACHED CODE FILE: ${attachedJobCodeFile.name} ---\n\`\`\`${ext}\n${attachedJobCodeFile.content}\n\`\`\``;
+      }
+      return combined;
     }
 
     function updateCreateJobBalanceUI() {
@@ -3202,21 +3291,25 @@
         openWalletModal();
         return;
       }
-      const rawPrompt = document.getElementById("job-prompt").value.trim();
+      const title = (document.getElementById("job-title")?.value || "").trim();
+      const rawPrompt = (document.getElementById("job-prompt")?.value || "").trim();
+      const targetLink = (document.getElementById("job-target-link")?.value || "").trim();
       const capability = document.getElementById("job-capability").value.trim() || "analysis";
       const usdc = Number(document.getElementById("job-amount-usdc").value || "0");
-      if (!rawPrompt && !attachedJobCodeFile) {
-        showToast("Enter a task prompt or attach a code file first.");
+      if (!rawPrompt && !targetLink && !attachedJobCodeFile) {
+        showToast("Enter a task description, target link, or attach a file first.");
         return;
       }
       if (!Number.isFinite(usdc) || usdc <= 0) {
         showToast("Enter a valid USDC budget.");
         return;
       }
-      const displayPrompt = rawPrompt || `Security audit of ${attachedJobCodeFile.name}`;
+      const displayPrompt = rawPrompt || (targetLink ? `${capability.replace(/-/g, " ")} of ${targetLink}` : `${capability.replace(/-/g, " ")} of ${attachedJobCodeFile.name}`);
       const details = document.getElementById("job-confirm-details");
       details.innerHTML =
+        (title ? `<div><strong>Title:</strong> ${esc(title)}</div>` : "") +
         `<div><strong>Task:</strong> ${esc(displayPrompt.length > 120 ? displayPrompt.slice(0, 120) + "..." : displayPrompt)}</div>` +
+        (targetLink ? `<div><strong>Target Link:</strong> ${esc(targetLink)}</div>` : "") +
         (attachedJobCodeFile ? `<div><strong>Attached Code:</strong> ${esc(attachedJobCodeFile.name)} (${(attachedJobCodeFile.size / 1024).toFixed(1)} KB)</div>` : "") +
         `<div><strong>Capability:</strong> ${esc(capability)} · <strong>Budget:</strong> ${esc(usdc.toFixed(2))} USDC</div>` +
         `<div><strong>Wallet:</strong> ${esc(shortHex(connectedAccountId))} (NEAR Mainnet)</div>` +
@@ -3621,7 +3714,11 @@
             startLiveTraceStream(registeredJobId);
           }
           document.getElementById("job-confirm-panel").style.display = "none";
+          const titleEl = document.getElementById("job-title");
+          if (titleEl) titleEl.value = "";
           document.getElementById("job-prompt").value = "";
+          const linkEl = document.getElementById("job-target-link");
+          if (linkEl) linkEl.value = "";
           clearAttachedJobCodeFile();
           box.innerHTML = `Job created &amp; escrow verified on NEAR Mainnet · Tx: <a href="https://nearblocks.io/txns/${esc(txHash)}" target="_blank" rel="noreferrer">${esc(shortHex(txHash))}</a>`;
         });
