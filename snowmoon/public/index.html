@@ -1337,6 +1337,38 @@
     }
     @keyframes btnSpin { to { transform: rotate(360deg); } }
 
+    /* Smooth Expand / Slow-Mo Bottom-to-Top Collapse for Confirm Job Drawer */
+    .job-confirm-drawer {
+      display: grid;
+      grid-template-rows: 0fr;
+      opacity: 0;
+      margin-top: 0;
+      transform: translateY(-6px);
+      pointer-events: none;
+      transition:
+        grid-template-rows 0.52s cubic-bezier(0.22, 1, 0.36, 1),
+        opacity 0.42s ease,
+        transform 0.52s cubic-bezier(0.22, 1, 0.36, 1),
+        margin-top 0.52s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+    .job-confirm-drawer.is-open {
+      grid-template-rows: 1fr;
+      opacity: 1;
+      margin-top: 12px;
+      transform: translateY(0);
+      pointer-events: auto;
+    }
+    .job-confirm-inner {
+      overflow: hidden;
+      min-height: 0;
+    }
+    .job-confirm-box {
+      padding: 14px;
+      border: 1px solid var(--border-2, var(--border));
+      border-radius: var(--radius-sm);
+      background: var(--panel-2);
+    }
+
     /* Live Shimmer Skeleton Loaders */
     .skeleton {
       display: inline-block;
@@ -1633,12 +1665,16 @@
               <button id="job-get-usdc-btn" type="button" class="btn btn-near-green job-submit-get-usdc" onclick="openIntentsBridgeModal()">Get USDC on NEAR</button>
             </div>
 
-            <div id="job-confirm-panel" style="display:none; margin-top:12px; padding:14px; border:1px solid var(--border-2, var(--border)); border-radius:var(--radius-sm); background:var(--panel-2);">
-              <div style="font-weight:700; font-size:13.5px; color:var(--text); margin-bottom:8px;">Confirm Job &amp; Escrow</div>
-              <div id="job-confirm-details" style="display:flex; flex-direction:column; gap:6px; margin-bottom:12px; font-size:13px; line-height:1.5; color:var(--text);"></div>
-              <div style="display:flex; gap:8px;">
-                <button id="job-confirm-btn" class="btn btn-primary" style="flex:1;" onclick="confirmAndFundJob()">Approve in Wallet</button>
-                <button class="btn" onclick="cancelJobReviewStep()">Cancel</button>
+            <div id="job-confirm-panel" class="job-confirm-drawer" aria-hidden="true">
+              <div class="job-confirm-inner">
+                <div class="job-confirm-box">
+                  <div style="font-weight:700; font-size:13.5px; color:var(--text); margin-bottom:8px;">Confirm Job &amp; Escrow</div>
+                  <div id="job-confirm-details" style="display:flex; flex-direction:column; gap:6px; margin-bottom:12px; font-size:13px; line-height:1.5; color:var(--text);"></div>
+                  <div style="display:flex; gap:8px;">
+                    <button id="job-confirm-btn" class="btn btn-primary" style="flex:1;" onclick="confirmAndFundJob()">Approve in Wallet</button>
+                    <button class="btn" type="button" onclick="cancelJobReviewStep()">Cancel</button>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -3312,11 +3348,24 @@
         `<div><strong>Capability:</strong> ${esc(capability)} · <strong>Budget:</strong> ${esc(usdc.toFixed(2))} USDC</div>` +
         `<div><strong>Wallet:</strong> ${esc(shortHex(connectedAccountId))} (NEAR Mainnet)</div>` +
         `<div><strong>Fees:</strong> NEAR network gas (~0.001 NEAR) · 0% SnowMoon fee</div>`;
-      document.getElementById("job-confirm-panel").style.display = "block";
+      const confirmPanel = document.getElementById("job-confirm-panel");
+      if (confirmPanel) {
+        confirmPanel.setAttribute("aria-hidden", "false");
+        requestAnimationFrame(() => {
+          confirmPanel.classList.add("is-open");
+        });
+        setTimeout(() => {
+          confirmPanel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        }, 180);
+      }
     }
 
     function cancelJobReviewStep() {
-      document.getElementById("job-confirm-panel").style.display = "none";
+      const confirmPanel = document.getElementById("job-confirm-panel");
+      if (confirmPanel) {
+        confirmPanel.classList.remove("is-open");
+        confirmPanel.setAttribute("aria-hidden", "true");
+      }
     }
 
     let liveTraceEvents = [];
@@ -3713,7 +3762,7 @@
           if (registeredJobId) {
             startLiveTraceStream(registeredJobId);
           }
-          document.getElementById("job-confirm-panel").style.display = "none";
+          cancelJobReviewStep();
           const titleEl = document.getElementById("job-title");
           if (titleEl) titleEl.value = "";
           document.getElementById("job-prompt").value = "";
