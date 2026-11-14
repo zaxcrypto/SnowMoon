@@ -748,6 +748,87 @@ export class AIWorkerAdapter {
           const jobSpendingPolicy = this.spendingPolicy;
           const toolCache = new Map<string, { ok: boolean; output: string; summary: string }>();
 
+          // Deterministic x402 pre-flight: ensure NEAR contract Security Audits (>= $0.10)
+          // always hire @contract-health-auditor instead of relying on LLM tool selection alone.
+          const effectiveBudgetAtomic =
+            BigInt(job.maxOperatingBudget || "0") > 0n
+              ? BigInt(job.maxOperatingBudget)
+              : BigInt(job.customerPayment || "0");
+          const nearContractMatch = job.taskDescription.match(/\b([a-z0-9_-]+(?:\.[a-z0-9_-]+)*\.near)\b/i);
+          const hasPayerKey = Boolean(
+            (process.env.NEAR_PRIVATE_KEY || this.config.secrets.operatorPrivateKey || "").trim()
+          );
+          if (
+            normalizedCap === "security-audit" &&
+            nearContractMatch &&
+            effectiveBudgetAtomic >= 100_000n &&
+            hasPayerKey
+          ) {
+            const targetContract = nearContractMatch[1].toLowerCase();
+            const preArgs = {
+              handle: "contract-health-auditor",
+              task_prompt: `Comprehensive security health audit of NEAR mainnet contract ${targetContract}.`,
+              max_budget_usdc: 0.05,
+              fallback_query: "NEAR contract audit",
+            };
+            const preCacheKey = `hire_near_market_agent:${JSON.stringify(preArgs)}`;
+            const preStart = Date.now();
+            emitLiveTrace({
+              jobId: job.jobId,
+              stage: "tool",
+              status: "running",
+              title: "Running hire_near_market_agent",
+              detail: `handle=${preArgs.handle}, contract=${targetContract}, max_budget_usdc=0.05`,
+            });
+            const preRes = await executeAgentTool("hire_near_market_agent", preArgs, {
+              fetchImpl: this.fetchImpl,
+              nearRpcUrl: this.config.nearMainnetRpcUrl,
+              githubToken: process.env.GITHUB_TOKEN,
+              jobId: job.jobId,
+              jobBudgetAtomic: effectiveBudgetAtomic.toString(),
+              spendingPolicy: jobSpendingPolicy,
+              nearAccountId:
+                process.env.NEAR_ACCOUNT_ID ||
+                this.config.operatorAccountId ||
+                this.config.mainnetOperatorAccountId,
+              nearPrivateKey:
+                process.env.NEAR_PRIVATE_KEY ||
+                this.config.secrets.operatorPrivateKey,
+              onTrace: (evt) =>
+                emitLiveTrace({
+                  jobId: job.jobId,
+                  stage: "tool",
+                  status: evt.status === "ok" ? "ok" : evt.status === "error" ? "error" : "running",
+                  title: evt.title,
+                  detail: evt.detail,
+                }),
+            });
+            const preMs = Date.now() - preStart;
+            toolCache.set(preCacheKey, preRes);
+            toolTrace.push({
+              round: 0,
+              toolName: "hire_near_market_agent",
+              args: preArgs,
+              ok: preRes.ok,
+              durationMs: preMs,
+              summary: preRes.summary,
+            });
+            emitLiveTrace({
+              jobId: job.jobId,
+              stage: "tool",
+              status: preRes.ok ? "ok" : "error",
+              title: preRes.ok ? "Ran hire_near_market_agent" : "Failed hire_near_market_agent",
+              detail: preRes.summary,
+              durationMs: preMs,
+            });
+            if (preRes.ok) {
+              baseMessages.push({
+                role: "system",
+                content: `PRE-FLIGHT VERIFIED MARKETPLACE AUDIT (@contract-health-auditor via market.near.ai x402):\n${preRes.output}\n\nIncorporate these verified findings alongside your near_rpc_view check without calling hire_near_market_agent again.`,
+              });
+            }
+          }
+
           for (let modelIdx = 0; modelIdx < candidateModels.length; modelIdx++) {
             activeModel = candidateModels[modelIdx];
             messages = [...baseMessages];
