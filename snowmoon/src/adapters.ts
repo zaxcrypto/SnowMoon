@@ -1,4 +1,12 @@
+import {
+  AGENT_TOOL_DEFINITIONS,
+  executeAgentTool,
+  selectModelForTask,
+  type ToolCallTraceEntry,
+} from "./agent_tools.ts";
+import { getCapabilitySystemRules, normalizeCapability } from "./capability_rules.ts";
 import type { SnowMoonConfig } from "./config.ts";
+import { emitLiveTrace } from "./live_trace.ts";
 import {
   type AIExecutionRecord,
   type AITokenUsage,
@@ -584,34 +592,76 @@ export class AIWorkerAdapter {
         fallbackReason = "NEAR_AI_API_KEY is not set in .env";
       } else {
         const endpoint = this.getChatCompletionsUrl();
-        const controller = new AbortController();
-        const timeoutMs = this.config.nearAiTimeoutMs || 30000;
-        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        const capabilityMatch = job.title.match(/\[capability:([a-z0-9_-]+)\]/i);
+        const normalizedCap = normalizeCapability(capabilityMatch?.[1]);
+        const timeoutMs =
+          normalizedCap === "security-audit"
+            ? Math.max(90000, this.config.nearAiTimeoutMs || 90000)
+            : Math.max(60000, this.config.nearAiTimeoutMs || 60000);
 
         try {
-          const resp = await this.fetchImpl(endpoint, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${this.config.secrets.nearAiApiKey}`,
-            },
-            body: JSON.stringify(this.buildInferencePayload(job)),
-            signal: controller.signal,
+          const routePlan = selectModelForTask({
+            capability: capabilityMatch?.[1],
+            prompt: job.taskDescription,
+            amountAtomic: job.customerPayment,
+            defaultModel: this.config.nearAiModel,
           });
 
-          if (!resp.ok) {
-            const errBody = await resp.text().catch(() => "");
-            const cleanErr = sanitizeErrorMessage(
-              `HTTP ${resp.status} ${resp.statusText}: ${errBody}`,
-              this.config.secrets.nearAiApiKey
-            );
-            throw new Error(`NEAR_AI_HTTP_ERROR: ${cleanErr}`);
-          }
+          const candidateModels = [routePlan.primaryModel, ...routePlan.fallbackModels].filter(
+            (m, i, arr) => Boolean(m) && arr.indexOf(m) === i
+          );
 
-          const data = (await resp.json()) as {
+          const capabilityRules = getCapabilitySystemRules(capabilityMatch?.[1]);
+          if (capabilityRules) {
+            emitLiveTrace({
+              jobId: job.jobId,
+              stage: "rules",
+              status: "ok",
+              title: `Loaded ${normalizedCap} protocol rules`,
+              detail: "Anti-burn tool dedup + 5-point security checklist + mandatory RPC citation active",
+            });
+          }
+          const systemPrompt = [
+            "You are SnowMoon Autonomous AI Worker running on NEAR Protocol & NEAR AI Cloud.",
+            `Current UTC Date/Time: ${new Date().toISOString()}`,
+            "You have real-time tools: `web_search`, `fetch_url`, `github_repo_tree`, `github_read_file`, `github_search_code`, `near_rpc_view`, and `near_docs_search`.",
+            "CRITICAL RULES:",
+            "1. NEVER guess or fabricate current prices, market caps, news, file contents, or vulnerability findings from memory. Always call your tools first to verify live data or actual repository source code.",
+            "2. For GitHub repository audits, ALWAYS start with `github_repo_tree`, then read the key source files with `github_read_file` / `github_search_code`, and cite exact file paths, line numbers, and concrete remediation steps.",
+            "3. For live market/research queries, ALWAYS use `web_search` or `fetch_url` and include the exact UTC timestamp and source URLs.",
+            "4. Produce a clear, structured, actionable Markdown deliverable.",
+            "5. Keep tool calls focused (inspect 2-4 key files max) and ALWAYS output the complete final Markdown deliverable directly in message content—never leave content empty or output scratchpad notes.",
+            ...(capabilityRules ? ["", capabilityRules] : []),
+          ].join("\n");
+
+          type ChatMessage = {
+            role: "system" | "user" | "assistant" | "tool";
+            content: string | null;
+            tool_calls?: Array<{
+              id: string;
+              type: "function";
+              function: { name: string; arguments: string };
+              [key: string]: unknown;
+            }>;
+            tool_call_id?: string;
+            [key: string]: unknown;
+          };
+
+          type ChatCompletionResponse = {
             id?: string;
             model?: string;
-            choices?: Array<{ message?: { content?: string } }>;
+            choices?: Array<{
+              message?: {
+                content?: string | null;
+                tool_calls?: Array<{
+                  id: string;
+                  type: "function";
+                  function: { name: string; arguments: string };
+                  [key: string]: unknown;
+                }>;
+                [key: string]: unknown;
+              };
+            }>;
             usage?: {
               prompt_tokens?: number;
               completion_tokens?: number;
@@ -619,31 +669,272 @@ export class AIWorkerAdapter {
             };
           };
 
-          const rawContent = data.choices?.[0]?.message?.content?.trim();
+          const baseMessages: ChatMessage[] = [
+            { role: "system", content: systemPrompt },
+            {
+              role: "user",
+              content: `Job ID: ${job.jobId}\nTitle: ${job.title}\nTask: ${job.taskDescription}\nEscrow Payment: ${job.customerPayment} atomic USDC\nOperating Budget Spent: ${job.operatingSpent} atomic USDC across ${job.expenses.length} verified receipts.`,
+            },
+          ];
+
+          const callModelTurn = async (
+            modelId: string,
+            messages: ChatMessage[],
+            includeTools: boolean
+          ): Promise<ChatCompletionResponse> => {
+            const payload: Record<string, unknown> = {
+              model: modelId,
+              messages,
+              temperature: 0.2,
+              max_tokens: routePlan.maxTokens,
+            };
+            if (includeTools) {
+              payload.tools = AGENT_TOOL_DEFINITIONS;
+              payload.tool_choice = "auto";
+            }
+            const turnController = new AbortController();
+            const turnTimer = setTimeout(() => turnController.abort(), timeoutMs);
+            try {
+              const resp = await this.fetchImpl(endpoint, {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  Authorization: `Bearer ${this.config.secrets.nearAiApiKey}`,
+                },
+                body: JSON.stringify(payload),
+                signal: turnController.signal,
+              });
+              if (!resp.ok) {
+                const errBody = await resp.text().catch(() => "");
+                const cleanErr = sanitizeErrorMessage(
+                  `HTTP ${resp.status} ${resp.statusText}: ${errBody}`,
+                  this.config.secrets.nearAiApiKey
+                );
+                throw new Error(`NEAR_AI_HTTP_ERROR (${modelId}): ${cleanErr}`);
+              }
+              return (await resp.json()) as ChatCompletionResponse;
+            } finally {
+              clearTimeout(turnTimer);
+            }
+          };
+
+          let activeModel = candidateModels[0];
+          let messages: ChatMessage[] = [...baseMessages];
+          let totalPromptTokens = 0;
+          let totalCompletionTokens = 0;
+          let totalTokensSum = 0;
+          let lastRequestId: string | undefined;
+          let resolvedModel = activeModel;
+          let rawContent = "";
+          const toolTrace: ToolCallTraceEntry[] = [];
+          const toolCache = new Map<string, { ok: boolean; output: string; summary: string }>();
+
+          for (let modelIdx = 0; modelIdx < candidateModels.length; modelIdx++) {
+            activeModel = candidateModels[modelIdx];
+            messages = [...baseMessages];
+            emitLiveTrace({
+              jobId: job.jobId,
+              stage: "ai",
+              status: "info",
+              title: `Routing to ${activeModel} (${routePlan.tier})`,
+              detail: routePlan.reason,
+            });
+            try {
+              for (let round = 0; round <= routePlan.maxToolRounds; round++) {
+                const isLastRound = round === routePlan.maxToolRounds;
+                emitLiveTrace({
+                  jobId: job.jobId,
+                  stage: "ai",
+                  status: "running",
+                  title: `Thinking (${activeModel} · Round ${round + 1}/${routePlan.maxToolRounds + 1})`,
+                });
+                const roundT0 = Date.now();
+                const data = await callModelTurn(activeModel, messages, !isLastRound);
+                lastRequestId = data.id || lastRequestId;
+                resolvedModel = data.model || activeModel;
+                const pt = Number(data.usage?.prompt_tokens ?? 0);
+                const ct = Number(data.usage?.completion_tokens ?? 0);
+                const tt = Number(data.usage?.total_tokens ?? pt + ct);
+                totalPromptTokens += pt;
+                totalCompletionTokens += ct;
+                totalTokensSum += tt;
+
+                const msg = data.choices?.[0]?.message;
+                const toolCalls = msg?.tool_calls;
+                if (Array.isArray(toolCalls) && toolCalls.length > 0 && !isLastRound) {
+                  emitLiveTrace({
+                    jobId: job.jobId,
+                    stage: "ai",
+                    status: "ok",
+                    title: `${resolvedModel} requested ${toolCalls.length} tool call(s)`,
+                    durationMs: Math.max(1, Date.now() - roundT0),
+                  });
+                  messages.push({
+                    ...msg,
+                    role: "assistant",
+                    content: msg?.content ?? null,
+                    tool_calls: toolCalls,
+                  });
+                  for (const tc of toolCalls.slice(0, 6)) {
+                    const t0 = Date.now();
+                    let parsedArgs: Record<string, unknown> = {};
+                    try {
+                      parsedArgs = JSON.parse(tc.function?.arguments || "{}") as Record<
+                        string,
+                        unknown
+                      >;
+                    } catch {
+                      parsedArgs = {};
+                    }
+                    const toolName = tc.function?.name || "";
+                    const argPreview = Object.entries(parsedArgs)
+                      .map(([k, v]) => `${k}=${typeof v === "string" ? v.slice(0, 60) : JSON.stringify(v)}`)
+                      .join(", ");
+                    emitLiveTrace({
+                      jobId: job.jobId,
+                      stage: "tool",
+                      status: "running",
+                      title: `Running ${toolName}`,
+                      detail: argPreview || undefined,
+                    });
+                    const cacheKey = `${toolName}:${JSON.stringify(parsedArgs)}`;
+                    const isCachedHit = toolCache.has(cacheKey);
+                    const toolRes = isCachedHit
+                      ? toolCache.get(cacheKey)!
+                      : await executeAgentTool(toolName, parsedArgs, {
+                          fetchImpl: this.fetchImpl,
+                          nearRpcUrl: this.config.nearMainnetRpcUrl,
+                          githubToken: process.env.GITHUB_TOKEN,
+                        });
+                    if (!isCachedHit) toolCache.set(cacheKey, toolRes);
+                    const durationMs = Math.max(1, Date.now() - t0);
+                    emitLiveTrace({
+                      jobId: job.jobId,
+                      stage: "tool",
+                      status: toolRes.ok ? "ok" : "error",
+                      title: `${toolRes.ok ? "Ran" : "Failed"} ${toolName}${isCachedHit ? " (cached)" : ""}`,
+                      detail: toolRes.summary,
+                      durationMs,
+                    });
+                    toolTrace.push({
+                      round: round + 1,
+                      toolName: tc.function?.name || "unknown",
+                      args: parsedArgs,
+                      ok: toolRes.ok,
+                      summary: toolRes.summary,
+                      durationMs,
+                    });
+                    messages.push({
+                      role: "tool",
+                      tool_call_id: tc.id,
+                      content: isCachedHit
+                        ? `[CACHED DUPLICATE CALL] You already ran ${toolName} with these exact arguments earlier in this session. Do NOT repeat this call; use the earlier output above and either inspect a different file or write your final Markdown report now.`
+                        : toolRes.output,
+                    });
+                  }
+                  continue;
+                }
+
+                rawContent = (msg?.content || "").trim();
+                if (rawContent.includes("<function_calls>") || rawContent.includes("<invoke ")) {
+                  const stripped = rawContent.replace(/<function_calls>[\s\S]*?<\/function_calls>/gi, "").trim();
+                  messages.push({ role: "assistant", content: stripped || "I have inspected the repository files." });
+                  messages.push({
+                    role: "user",
+                    content:
+                      "Tool calling is now closed. Do NOT output <function_calls> or XML. Write the complete final Markdown deliverable/audit report now based strictly on the files you already read.",
+                  });
+                  const finalData = await callModelTurn(activeModel, messages, false);
+                  rawContent = (finalData.choices?.[0]?.message?.content || stripped || "").replace(/<function_calls>[\s\S]*?<\/function_calls>/gi, "").trim();
+                }
+                emitLiveTrace({
+                  jobId: job.jobId,
+                  stage: "ai",
+                  status: "ok",
+                  title: `Generated deliverable (${rawContent.length.toLocaleString()} chars)`,
+                  detail: `Model: ${resolvedModel} · Prompt ${totalPromptTokens} + Completion ${totalCompletionTokens} tokens`,
+                  durationMs: Math.max(1, Date.now() - roundT0),
+                });
+                break;
+              }
+              if (rawContent) break;
+            } catch (modelErr) {
+              const msg = modelErr instanceof Error ? modelErr.message : String(modelErr);
+              emitLiveTrace({
+                jobId: job.jobId,
+                stage: "ai",
+                status: "error",
+                title: `${activeModel} failed`,
+                detail: msg,
+              });
+              if (msg.includes("HTTP 401") || msg.includes("HTTP 402") || modelIdx === candidateModels.length - 1) {
+                throw modelErr;
+              }
+              // Fall back to next model in routePlan
+            }
+          }
+
           if (!rawContent) {
             throw new Error("NEAR_AI_EMPTY_RESPONSE: choices[0].message.content was empty");
           }
 
-          const resolvedModel = data.model || this.config.nearAiModel;
+          // Optional Cross-Model Peer Review for Tier-3 Audit jobs when tools were executed
+          let peerReviewSection = "";
+          if (
+            routePlan.criticModel &&
+            routePlan.criticModel !== resolvedModel &&
+            toolTrace.length > 0
+          ) {
+            try {
+              const criticResp = await callModelTurn(
+                routePlan.criticModel,
+                [
+                  {
+                    role: "system",
+                    content:
+                      "You are an independent Security & Accuracy Peer Reviewer. Review the worker's deliverable against the task and tool evidence. Flag any gaps, unverified claims, or missed edge cases concisely in 3-5 bullets, or confirm verification.",
+                  },
+                  {
+                    role: "user",
+                    content: `Task: ${job.taskDescription}\n\nTools Executed: ${toolTrace.map((t) => `${t.toolName}(${t.summary})`).join(", ")}\n\nWorker Deliverable (${resolvedModel}):\n${rawContent.slice(0, 8000)}`,
+                  },
+                ],
+                false
+              );
+              const criticText = criticResp.choices?.[0]?.message?.content?.trim();
+              if (criticText) {
+                totalPromptTokens += Number(criticResp.usage?.prompt_tokens ?? 0);
+                totalCompletionTokens += Number(criticResp.usage?.completion_tokens ?? 0);
+                totalTokensSum += Number(criticResp.usage?.total_tokens ?? 0);
+                peerReviewSection = `\n\n---\n### Independent Cross-Model Peer Review (\`${criticResp.model || routePlan.criticModel}\`)\n${criticText}`;
+              }
+            } catch {
+              // Non-fatal: keep primary deliverable if critic fails
+            }
+          }
+
           const tokenUsage: AITokenUsage = {
-            promptTokens: Number(data.usage?.prompt_tokens ?? 0),
-            completionTokens: Number(data.usage?.completion_tokens ?? 0),
-            totalTokens: Number(
-              data.usage?.total_tokens ??
-                (Number(data.usage?.prompt_tokens ?? 0) +
-                  Number(data.usage?.completion_tokens ?? 0))
-            ),
+            promptTokens: totalPromptTokens,
+            completionTokens: totalCompletionTokens,
+            totalTokens: totalTokensSum || totalPromptTokens + totalCompletionTokens,
           };
 
+          const toolSummaryLine =
+            toolTrace.length > 0
+              ? `> **Agentic Tools Executed (${toolTrace.length}):** ${toolTrace.map((t) => `\`${t.toolName}\` (${t.summary})`).join(" · ")}`
+              : `> **Agentic Tools Executed:** \`0\` (direct reasoning)`;
+
           const liveHeader = [
-            `> **Execution Mode:** \`[LIVE NEAR AI CLOUD — REAL INFERENCE RESPONSE]\``,
+            `> **Execution Mode:** \`[LIVE NEAR AI CLOUD — AGENTIC WORKER]\``,
             `> **Endpoint:** \`${endpoint}\``,
-            `> **Model:** \`${resolvedModel}\`${data.id ? ` | **Request ID:** \`${data.id}\`` : ""}`,
+            `> **Model:** \`${resolvedModel}\` (\`${routePlan.tier}\`)${lastRequestId ? ` | **Request ID:** \`${lastRequestId}\`` : ""}`,
+            `> **Routing:** ${routePlan.reason}`,
+            toolSummaryLine,
             `> **Token Usage:** Prompt \`${tokenUsage.promptTokens}\` + Completion \`${tokenUsage.completionTokens}\` = Total \`${tokenUsage.totalTokens}\` tokens`,
             ``,
           ].join("\n");
 
-          const deliverableMarkdown = `${liveHeader}\n${rawContent}`;
+          const deliverableMarkdown = `${liveHeader}\n${rawContent}${peerReviewSection}`;
           const deliveryHash = sha256Hex(
             `snowmoon-delivery|${job.jobId}|${job.termsHash}|${deliverableMarkdown}`
           );
@@ -655,7 +946,7 @@ export class AIWorkerAdapter {
             adapterLabel: `LIVE NEAR AI CLOUD (${resolvedModel})`,
             model: resolvedModel,
             endpoint,
-            requestId: data.id,
+            requestId: lastRequestId,
             tokenUsage,
             taskPrompt: job.taskDescription,
             summary: rawContent.split("\n").find((l) => l.trim().length > 0)?.replace(/^#+\s*/, "").slice(0, 160) || "NEAR AI Cloud live inference completed.",
@@ -680,8 +971,6 @@ export class AIWorkerAdapter {
           if (this.config.isProductionMode) {
             throw new Error(`ERR_NEAR_AI_INFERENCE_FAILED: ${fallbackReason}`);
           }
-        } finally {
-          clearTimeout(timer);
         }
       }
     }

@@ -58,8 +58,26 @@ function isValidNearTxHash(txHash: string): boolean {
   return /^[1-9A-HJ-NP-Za-km-z]{32,64}$/.test(trimmed);
 }
 
+function canonicalJsonStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return "[" + value.map((item) => (item === undefined ? "null" : canonicalJsonStringify(item))).join(",") + "]";
+  }
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj)
+    .filter((k) => obj[k] !== undefined)
+    .sort();
+  return (
+    "{" +
+    keys.map((k) => `${JSON.stringify(k)}:${canonicalJsonStringify(obj[k])}`).join(",") +
+    "}"
+  );
+}
+
 export function computeCanonicalEvidenceHash(deliverable: Record<string, unknown>): string {
-  const canonical = JSON.stringify(deliverable);
+  const canonical = canonicalJsonStringify(deliverable);
   return "0x" + crypto.createHash("sha256").update(canonical).digest("hex");
 }
 
@@ -569,7 +587,9 @@ export class VerificationEngine {
       };
     }
 
-    if (isFinal && "SuccessValue" in statusObj) {
+    const anchorAlreadyOnChain = Boolean(onChainRes.ok && onChainRes.data != null);
+    const callbackReturnedTrue = statusObj.SuccessValue === "dHJ1ZQ==";
+    if (anchorAlreadyOnChain || callbackReturnedTrue || (isFinal && "SuccessValue" in statusObj)) {
       rec.anchorStatus = "ANCHORED";
       rec.auditTxHash = txHash;
       rec.auditSignerAccountId = signer;
