@@ -3355,8 +3355,8 @@
           confirmPanel.classList.add("is-open");
         });
         setTimeout(() => {
-          confirmPanel.scrollIntoView({ behavior: "smooth", block: "nearest" });
-        }, 180);
+          confirmPanel.scrollIntoView({ behavior: "smooth", block: "end" });
+        }, 380);
       }
     }
 
@@ -3365,6 +3365,12 @@
       if (confirmPanel) {
         confirmPanel.classList.remove("is-open");
         confirmPanel.setAttribute("aria-hidden", "true");
+        const jobsView = document.getElementById("view-jobs");
+        if (jobsView) {
+          setTimeout(() => {
+            jobsView.scrollIntoView({ behavior: "smooth", block: "start" });
+          }, 120);
+        }
       }
     }
 
