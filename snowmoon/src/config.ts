@@ -241,7 +241,7 @@ export function loadConfig(envOverrides?: Record<string, string | undefined>): S
     }
     pilotMaxJobUsdcAtomic = BigInt(rawPilotMax);
   } else if (pilotEnabled) {
-    pilotMaxJobUsdcAtomic = 2_000_000n; // Default controlled pilot cap: 2.00 USDC per job
+    pilotMaxJobUsdcAtomic = 1_000_000n; // Default beta pilot cap: 1.00 USDC per job
   }
   const rawPilotFloat = (env.SNOWMOON_PILOT_FLOAT_POOL_ENABLED || "").trim().toLowerCase();
   const pilotFloatPoolEnabled =

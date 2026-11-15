@@ -3297,7 +3297,7 @@
           const allowLabel = pilot.allowlistActive ? " · Allowlisted Pilot Accounts" : "";
           betaBanner.style.display = "flex";
           betaText.innerHTML =
-            `<strong>Controlled Mainnet Pilot:</strong> Live USDC escrow funding is active (max <strong>$${esc(capUsdc)} USDC</strong>/job · <strong>${esc(floatLabel)}</strong>${esc(allowLabel)}).`;
+            `<strong>Beta Phase:</strong> Live USDC escrow testing is currently capped at <strong>$${esc(capUsdc)} USDC</strong>/job · <strong>${esc(floatLabel)}</strong>${esc(allowLabel)}.`;
         } else {
           betaBanner.style.display = "none";
         }
@@ -3526,6 +3526,14 @@
       }
       if (!Number.isFinite(usdc) || usdc <= 0) {
         showToast("Enter a valid USDC budget.");
+        return;
+      }
+      const pilot = latestState?.environment?.pilot || latestHealth?.pilot;
+      const maxCapUsdc = pilot?.enabled && pilot?.maxJobUsdcAtomic
+        ? Number(pilot.maxJobUsdcAtomic) / 1e6
+        : null;
+      if (maxCapUsdc !== null && Number.isFinite(maxCapUsdc) && maxCapUsdc > 0 && usdc > maxCapUsdc) {
+        showToast(`Beta Phase: Testing is currently capped at $${maxCapUsdc.toFixed(2)} USDC per job.`);
         return;
       }
       const displayPrompt = rawPrompt || (targetLink ? `${capability.replace(/-/g, " ")} of ${targetLink}` : `${capability.replace(/-/g, " ")} of ${attachedJobCodeFile.name}`);
