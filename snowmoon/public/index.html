@@ -383,8 +383,11 @@
     /* Main Content */
     .main-wrap {
       min-width: 0;
-      padding: 24px 32px 64px 20px;
+      padding: 24px 32px 20px 20px;
       width: 100%;
+      display: flex;
+      flex-direction: column;
+      min-height: calc(100vh - 65px);
     }
     .page-header {
       display: flex;
@@ -414,7 +417,7 @@
     }
 
     .view-section { display: none; }
-    .view-section.active { display: block; }
+    .view-section.active { display: block; padding-bottom: 56px; }
 
     /* Cards & Grids */
     .grid-4 {
@@ -1451,8 +1454,8 @@
 
     /* Polymarket-style Bottom Footer & Pre-Wallet Legal Gate Modal */
     .site-footer {
-      margin-top: 44px;
-      padding: 22px 4px 28px;
+      margin-top: auto;
+      padding: 22px 4px 8px;
       border-top: 1px solid var(--border);
       display: flex;
       flex-direction: column;
