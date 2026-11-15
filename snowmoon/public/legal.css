@@ -148,16 +148,20 @@ code, .mono {
 }
 
 .legal-callout {
-  background: var(--warn-bg);
-  border: 1px solid var(--warn-border);
+  background: var(--panel);
+  border: 1px solid var(--border-2);
+  border-left: 3px solid var(--accent);
   color: var(--text-2);
-  border-radius: 14px;
-  padding: 14px 18px;
+  border-radius: 12px;
+  padding: 15px 18px;
   margin-bottom: 28px;
   font-size: 14px;
 }
 
-.legal-callout strong { color: var(--warn-text); }
+.legal-callout strong {
+  color: var(--text);
+  font-weight: 600;
+}
 
 .legal-doc h2 {
   font-size: 18px;
