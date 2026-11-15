@@ -64,10 +64,22 @@ When execution starts, SnowMoon runs a multi-stage autonomous pipeline streamed 
 - **Accept & Settle:** Executes on-chain settlement on `core.cryptozax.near`, releasing USDC payout and unlocking full `.md` **Download** + optional cross-contract **Anchor Proof** on `audit.cryptozax.near`.
 - **Reject & Refund:** Clicking **Reject** opens a slide-up rejection reason drawer, marks the deliverable `REJECTED_LOCKED`, and enables deterministic customer **Refund (Wallet)**.
 
-### 6. FloatVault (`FloatPool`) & Spending Policy
-- **FloatPool (`core.cryptozax.near`):** Built-in USDC working-capital liquidity vault. LPs deposit USDC to earn yield, operators draw bounded advances against active escrowed jobs to cover x402 marketplace hires/compute, and on settlement `FloatPool` uses a **priority repayment waterfall**:
-  1. `FloatPool` is repaid **first** (`borrowed principal + LP yield fee`, e.g. `2.00%`).
-  2. Remaining `operator_net` goes to the worker/operator (`0%` extra SnowMoon platform fee).
+### 6. FloatVault (`FloatPool`), 50% Advance Borrowing & Spending Policy
+- **FloatPool (`core.cryptozax.near` — `math.rs` / `pool.rs` / `float_pool.ts`):** Built-in on-chain USDC working-capital liquidity vault. Liquidity Providers (LPs) deposit USDC (min `$1.00 USDC`) to earn yield, and operators can borrow an upfront advance against an active `Funded` customer escrow to cover x402 marketplace hires and compute before customer settlement:
+  - **50% Base Borrow Limit (Dynamic Reputation Curve):**
+    - Base advance rate starts at **50%** (`BASE_BPS = 5000`) of the escrowed job amount.
+    - Increases by **+5%** (`+500 bps`) per accepted job up to an **85% cap** (`8500 bps`), or decreases by **-15%** (`-1500 bps`) per write-off down to a **30% floor** (`3000 bps`).
+  - **Fee Split (`2.00%` Advance Fee):**
+    - A flat **2.00%** (`FEE_BPS = 200`) fee is charged on the **borrowed principal** (`fee = principal * 200 / 10_000`).
+    - **80%** of that fee goes to **LP Yield** and **20%** (`RESERVE_CUT_BPS = 2000`) goes to the **FloatPool Loss Reserve**.
+  - **On-Chain Risk Caps:** Max **80%** (`8000 bps`) total pool utilization, max **10%** (`1000 bps`) single-org exposure cap, and governance-enforced `max_advance` / `max_total_exposure` limits.
+  - **Priority Repayment Waterfall (`accept_delivery`):**
+    1. `FloatPool` is repaid **first** (`borrowed principal + 2.00% fee`).
+    2. Remaining `operator_net` (`escrow - principal - fee`) goes to the worker/operator (`0%` extra SnowMoon platform fee).
+  - **Example (`$1.00 USDC` Escrow at 50% Base Rate):**
+    - Customer escrows `$1.00 USDC` -> Operator can borrow **`$0.50 USDC`** (`50%`) upfront from `FloatPool` (e.g., to pay `$0.05` x402 agent + compute).
+    - Advance fee = `2.00%` of `$0.50` = **`$0.01 USDC`** (`$0.008` LP yield + `$0.002` loss reserve).
+    - On `accept_delivery`, `$0.51 USDC` repays `FloatPool` first, and the remaining **`$0.49 USDC`** (`operator_net`) goes to the operator. (On customer **Reject**, the customer receives a full refund from escrow and the operator owes/settles the advance).
 - **Spending Policy (`spending_policy.ts` & Approvals Tab):** Enforces configurable autonomous micro-spend limits (e.g., `<= $0.10` USDC auto-approve), human escalation above limit, per-job budget caps, and post-approval substitution guards.
 
 ---
