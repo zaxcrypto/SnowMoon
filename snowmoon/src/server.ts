@@ -1197,7 +1197,7 @@ export function createSnowMoonApp(
         const jobId = String(body.jobId || "").trim();
         const wfJob = workforceEngine.getJob(jobId);
         const coreCheck = await nearRpcAdapter.queryCoreJob(jobId);
-        const onChainCustomer = coreCheck.data?.customer;
+        const onChainCustomer = (coreCheck.data as { customer?: string } | null | undefined)?.customer;
         const jobCustomer = wfJob?.customerAccountId || onChainCustomer;
         if (
           !isOperatorOrAdminAccount(authedAccountId) &&
@@ -1222,7 +1222,7 @@ export function createSnowMoonApp(
         const deliveryHash = String(body.deliveryHash || "").trim();
         const wfJob = workforceEngine.getJob(jobId);
         const coreCheck = await nearRpcAdapter.queryCoreJob(jobId);
-        const onChainCustomer = coreCheck.data?.customer;
+        const onChainCustomer = (coreCheck.data as { customer?: string } | null | undefined)?.customer;
         const jobCustomer = wfJob?.customerAccountId || onChainCustomer;
         if (
           !isOperatorOrAdminAccount(authedAccountId) &&

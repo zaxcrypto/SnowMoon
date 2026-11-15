@@ -1030,13 +1030,7 @@ export class NearMainnetRpcAdapter {
    * Read-only queries for specific Core / Audit contract methods when a contract is deployed.
    */
   public async queryCoreJob(jobId: string, coreContractId = this.config.mainnetCoreContractId) {
-    return this.callViewMethod<{
-      job_id?: string;
-      customer: string;
-      operator: string;
-      status: string;
-      [k: string]: unknown;
-    }>(coreContractId, "get_job", { job_id: jobId });
+    return this.callViewMethod(coreContractId, "get_job", { job_id: jobId });
   }
 
   public async queryCoreAccounting(coreContractId = this.config.mainnetCoreContractId) {
@@ -1705,19 +1699,20 @@ export class NearMainnetRpcAdapter {
   }> {
     const jobIdHex = normalizeHex32Lowercase(jobId, "jobId");
     const coreJobRes = await this.queryCoreJob(jobIdHex);
-    if (!coreJobRes.ok || !coreJobRes.data) {
+    const coreJob = coreJobRes.data as { status?: string; operator?: string; customer?: string } | null | undefined;
+    if (!coreJobRes.ok || !coreJob) {
       throw new Error(coreJobRes.error || `ERR_UNKNOWN_JOB: Job ${jobIdHex} not found on-chain.`);
     }
-    const status = coreJobRes.data.status;
+    const status = String(coreJob.status || "");
     if (status === "InProgress" || status === "Delivered" || status === "Accepted") {
       return { ok: true, status, txHash: null, alreadyInState: true };
     }
     if (status !== "Funded") {
       throw new Error(`ERR_INVALID_STATUS: On-chain job status is ${status} (expected Funded).`);
     }
-    if (coreJobRes.data.operator !== this.config.mainnetOperatorAccountId) {
+    if (coreJob.operator !== this.config.mainnetOperatorAccountId) {
       throw new Error(
-        `ERR_NOT_OPERATOR: On-chain operator is ${coreJobRes.data.operator}, expected ${this.config.mainnetOperatorAccountId}.`
+        `ERR_NOT_OPERATOR: On-chain operator is ${coreJob.operator}, expected ${this.config.mainnetOperatorAccountId}.`
       );
     }
     const { txHash } = await this.callCoreMethodAsOperator("start_work", {
@@ -1742,10 +1737,11 @@ export class NearMainnetRpcAdapter {
       throw new Error("ERR_ZERO_HASH: deliveryHash must be non-zero.");
     }
     const coreJobRes = await this.queryCoreJob(jobIdHex);
-    if (!coreJobRes.ok || !coreJobRes.data) {
+    const coreJob = coreJobRes.data as { status?: string; operator?: string; customer?: string } | null | undefined;
+    if (!coreJobRes.ok || !coreJob) {
       throw new Error(coreJobRes.error || `ERR_UNKNOWN_JOB: Job ${jobIdHex} not found on-chain.`);
     }
-    let status = coreJobRes.data.status;
+    let status = String(coreJob.status || "");
     if (status === "Delivered" || status === "Accepted") {
       return {
         ok: true,
@@ -1755,9 +1751,9 @@ export class NearMainnetRpcAdapter {
         alreadyInState: true,
       };
     }
-    if (coreJobRes.data.operator !== this.config.mainnetOperatorAccountId) {
+    if (coreJob.operator !== this.config.mainnetOperatorAccountId) {
       throw new Error(
-        `ERR_NOT_OPERATOR: On-chain operator is ${coreJobRes.data.operator}, expected ${this.config.mainnetOperatorAccountId}.`
+        `ERR_NOT_OPERATOR: On-chain operator is ${coreJob.operator}, expected ${this.config.mainnetOperatorAccountId}.`
       );
     }
     let startWorkTxHash: string | null = null;
