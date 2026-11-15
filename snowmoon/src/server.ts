@@ -1429,18 +1429,29 @@ export function createSnowMoonApp(
         return;
       }
 
+      const assertWorkerOrJobOwnerAuthorized = (jobId: string, workerId: string): void => {
+        const headerToken = getWorkerToken();
+        if (headerToken) {
+          workforceEngine.assertWorkerAuthorized(workerId, headerToken, config.isProductionMode);
+          return;
+        }
+        if (getWalletToken()) {
+          const existingJob = workforceEngine.getJob(jobId);
+          if (!existingJob) {
+            throw new Error(`ERR_UNKNOWN_JOB: ${jobId}`);
+          }
+          assertCustomerOrOperatorSession(existingJob.customerAccountId);
+          return;
+        }
+        throw new Error("ERR_WORKER_AUTH_REQUIRED: Missing x-worker-token.");
+      };
+
       if (method === "POST" && pathname === "/api/workforce/jobs/accept") {
         const body = await readJsonBody(req);
+        const jobId = String(body.jobId || "");
         const workerId = String(body.workerId || "");
-        const headerToken = getWorkerToken();
-        if (!headerToken) {
-          throw new Error("ERR_WORKER_AUTH_REQUIRED: Missing x-worker-token.");
-        }
-        workforceEngine.assertWorkerAuthorized(workerId, headerToken, config.isProductionMode);
-        const job = workforceEngine.acceptJob(
-          String(body.jobId || ""),
-          workerId
-        );
+        assertWorkerOrJobOwnerAuthorized(jobId, workerId);
+        const job = workforceEngine.acceptJob(jobId, workerId);
         await repo.flushPending();
         sendJson(res, 200, { ok: true, job }, reqOrigin);
         return;
@@ -1448,15 +1459,11 @@ export function createSnowMoonApp(
 
       if (method === "POST" && pathname === "/api/workforce/jobs/execute") {
         const body = await readJsonBody(req);
+        const execJobId = String(body.jobId || "");
         const workerId = String(body.workerId || "");
-        const headerToken = getWorkerToken();
-        if (!headerToken) {
-          throw new Error("ERR_WORKER_AUTH_REQUIRED: Missing x-worker-token.");
-        }
-        workforceEngine.assertWorkerAuthorized(workerId, headerToken, config.isProductionMode);
+        assertWorkerOrJobOwnerAuthorized(execJobId, workerId);
         let job;
         let submission;
-        const execJobId = String(body.jobId || "");
         emitLiveTrace({
           jobId: execJobId,
           stage: "workforce",
