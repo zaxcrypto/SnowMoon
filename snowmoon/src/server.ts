@@ -1189,8 +1189,10 @@ export function createSnowMoonApp(
       }
 
       if (method === "POST" && pathname === "/api/near/vault/operator-start-work") {
-        assertNotRestrictedBeta();
-        const session = requireWalletSession();
+        if (config.restrictedBetaMode) {
+          throw new Error("ERR_RESTRICTED_BETA_MODE: Operator execution disabled in Restricted Mainnet Beta.");
+        }
+        const authedAccountId = assertAuthenticatedSession();
         const body = await readJsonBody(req);
         const jobId = String(body.jobId || "").trim();
         const wfJob = workforceEngine.getJob(jobId);
@@ -1198,11 +1200,11 @@ export function createSnowMoonApp(
         const onChainCustomer = coreCheck.data?.customer;
         const jobCustomer = wfJob?.customerAccountId || onChainCustomer;
         if (
-          !isOperatorOrAdminAccount(session.accountId) &&
-          (!jobCustomer || session.accountId !== jobCustomer)
+          !isOperatorOrAdminAccount(authedAccountId) &&
+          (!jobCustomer || authedAccountId !== jobCustomer)
         ) {
           throw new Error(
-            `ERR_ACCOUNT_IMPERSONATION_BLOCKED: ${session.accountId} cannot start work for job ${jobId}.`
+            `ERR_ACCOUNT_IMPERSONATION_BLOCKED: ${authedAccountId} cannot start work for job ${jobId}.`
           );
         }
         const result = await nearRpcAdapter.operatorStartWork(jobId);
@@ -1211,8 +1213,10 @@ export function createSnowMoonApp(
       }
 
       if (method === "POST" && pathname === "/api/near/vault/operator-submit-delivery") {
-        assertNotRestrictedBeta();
-        const session = requireWalletSession();
+        if (config.restrictedBetaMode) {
+          throw new Error("ERR_RESTRICTED_BETA_MODE: Operator delivery disabled in Restricted Mainnet Beta.");
+        }
+        const authedAccountId = assertAuthenticatedSession();
         const body = await readJsonBody(req);
         const jobId = String(body.jobId || "").trim();
         const deliveryHash = String(body.deliveryHash || "").trim();
@@ -1221,11 +1225,11 @@ export function createSnowMoonApp(
         const onChainCustomer = coreCheck.data?.customer;
         const jobCustomer = wfJob?.customerAccountId || onChainCustomer;
         if (
-          !isOperatorOrAdminAccount(session.accountId) &&
-          (!jobCustomer || session.accountId !== jobCustomer)
+          !isOperatorOrAdminAccount(authedAccountId) &&
+          (!jobCustomer || authedAccountId !== jobCustomer)
         ) {
           throw new Error(
-            `ERR_ACCOUNT_IMPERSONATION_BLOCKED: ${session.accountId} cannot submit delivery for job ${jobId}.`
+            `ERR_ACCOUNT_IMPERSONATION_BLOCKED: ${authedAccountId} cannot submit delivery for job ${jobId}.`
           );
         }
         const result = await nearRpcAdapter.operatorSubmitDelivery(jobId, deliveryHash);

@@ -1030,7 +1030,13 @@ export class NearMainnetRpcAdapter {
    * Read-only queries for specific Core / Audit contract methods when a contract is deployed.
    */
   public async queryCoreJob(jobId: string, coreContractId = this.config.mainnetCoreContractId) {
-    return this.callViewMethod(coreContractId, "get_job", { job_id: jobId });
+    return this.callViewMethod<{
+      job_id?: string;
+      customer: string;
+      operator: string;
+      status: string;
+      [k: string]: unknown;
+    }>(coreContractId, "get_job", { job_id: jobId });
   }
 
   public async queryCoreAccounting(coreContractId = this.config.mainnetCoreContractId) {
