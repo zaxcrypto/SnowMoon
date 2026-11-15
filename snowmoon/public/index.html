@@ -2548,7 +2548,7 @@
       <div class="legal-gate-points">
         <div><strong>1. Non-Custodial Interface:</strong> You keep full control of your keys and sign every Mainnet transaction directly.</div>
         <div><strong>2. Beta Cap ($1.00 USDC/job) &amp; AI Notice:</strong> AI deliverables (including Security Audits) are informational only. Never submit private keys or secrets.</div>
-        <div><strong>3. On-Chain &amp; Third-Party Risk:</strong> Smart contracts, FloatPool, NEAR Intents bridge, OutLayer TEE, and x402 agents carry financial and technical risk.</div>
+        <div><strong>3. Risk of 100% Loss:</strong> Smart contracts, FloatPool, NEAR Intents bridge, OutLayer TEE, and x402 agents carry technical and financial risk — you may lose up to <strong>100% of deposited funds</strong>.</div>
       </div>
       <label class="legal-gate-check">
         <input type="checkbox" id="legal-gate-checkbox" />
@@ -2560,7 +2560,7 @@
         </span>
       </label>
       <div class="legal-gate-actions">
-        <button type="button" class="btn btn-secondary" id="legal-gate-cancel">Cancel</button>
+        <button type="button" class="btn btn-secondary" id="legal-gate-cancel">Decline</button>
         <button type="button" class="btn btn-near-green" id="legal-gate-accept" disabled>Accept &amp; Connect Wallet</button>
       </div>
     </div>
@@ -5015,7 +5015,7 @@
     })();
 
     async function openWalletModal(skipLegalCheck = false) {
-      if (!skipLegalCheck && !hasAcceptedLegalTerms()) {
+      if (skipLegalCheck !== true && !hasAcceptedLegalTerms()) {
         if (openLegalGateModal()) return;
       }
       try {
