@@ -2787,12 +2787,54 @@
       }
     }
 
+    let inFlightRefreshPromise = null;
+    let refreshQueued = false;
+    const latestAuthedCache = {
+      workforceJobs: null,
+      workers: null,
+      escrows: null,
+      verifications: null,
+      settlements: null,
+      outlayerRequests: null,
+      intents: null,
+    };
+
+    function applyAuthedCacheToState(stateObj) {
+      if (!stateObj) return stateObj;
+      if (latestAuthedCache.workforceJobs) stateObj.workforceJobs = latestAuthedCache.workforceJobs;
+      if (latestAuthedCache.workers) stateObj.workers = latestAuthedCache.workers;
+      if (latestAuthedCache.escrows) stateObj.escrows = latestAuthedCache.escrows;
+      if (latestAuthedCache.verifications) stateObj.verifications = latestAuthedCache.verifications;
+      if (latestAuthedCache.settlements) stateObj.settlements = latestAuthedCache.settlements;
+      if (latestAuthedCache.outlayerRequests) stateObj.outlayerRequests = latestAuthedCache.outlayerRequests;
+      if (latestAuthedCache.intents) stateObj.intents = latestAuthedCache.intents;
+      return stateObj;
+    }
+
     async function refreshAll() {
+      if (inFlightRefreshPromise) {
+        refreshQueued = true;
+        return inFlightRefreshPromise;
+      }
+      inFlightRefreshPromise = (async () => {
       const banner = document.getElementById("global-status-banner");
       try {
+        if (!walletSessionToken) {
+          Object.keys(latestAuthedCache).forEach((k) => { latestAuthedCache[k] = null; });
+        }
         const statePromise = apiFetch("/api/state").then((res) => {
           if (res) {
-            latestState = res;
+            const prev = latestState || {};
+            latestState = Object.assign({}, res, {
+              workforceJobs: Array.isArray(res.workforceJobs) ? res.workforceJobs : (prev.workforceJobs || []),
+              workers: Array.isArray(res.workers) ? res.workers : (prev.workers || []),
+              escrows: Array.isArray(res.escrows) ? res.escrows : (prev.escrows || []),
+              settlements: Array.isArray(res.settlements) ? res.settlements : (prev.settlements || []),
+              outlayerRequests: Array.isArray(res.outlayerRequests) ? res.outlayerRequests : (prev.outlayerRequests || []),
+              intents: Array.isArray(res.intents) ? res.intents : (prev.intents || []),
+              verifications: (Array.isArray(res.verifications) && res.verifications.length > 0) ? res.verifications : (prev.verifications || []),
+            });
+            applyAuthedCacheToState(latestState);
             if (banner) banner.style.display = "none";
             renderAll();
           }
@@ -2841,7 +2883,7 @@
 
         const authedPromise = authedCalls.length > 0
           ? Promise.allSettled(authedCalls).then((extraRes) => {
-              if (latestState && walletSessionToken && extraRes.length === 7) {
+              if (walletSessionToken && extraRes.length === 7) {
                 const val = (i) => (extraRes[i]?.status === "fulfilled" ? extraRes[i].value : null);
                 const wfJobs = val(0);
                 const wfWorkers = val(1);
@@ -2850,14 +2892,17 @@
                 const setList = val(4);
                 const olReqs = val(5);
                 const intList = val(6);
-                if (wfJobs?.jobs) latestState.workforceJobs = wfJobs.jobs;
-                if (wfWorkers?.workers) latestState.workers = wfWorkers.workers;
-                if (escJobs?.jobs || escJobs?.records) latestState.escrows = escJobs.jobs || escJobs.records;
-                if (verSubs?.submissions) latestState.verifications = verSubs.submissions;
-                if (setList?.settlements || setList?.records) latestState.settlements = setList.settlements || setList.records;
-                if (olReqs?.requests) latestState.outlayerRequests = olReqs.requests;
-                if (intList?.intents) latestState.intents = intList.intents;
-                renderAll();
+                if (wfJobs?.jobs) latestAuthedCache.workforceJobs = wfJobs.jobs;
+                if (wfWorkers?.workers) latestAuthedCache.workers = wfWorkers.workers;
+                if (escJobs?.jobs || escJobs?.records) latestAuthedCache.escrows = escJobs.jobs || escJobs.records;
+                if (verSubs?.submissions) latestAuthedCache.verifications = verSubs.submissions;
+                if (setList?.settlements || setList?.records) latestAuthedCache.settlements = setList.settlements || setList.records;
+                if (olReqs?.requests) latestAuthedCache.outlayerRequests = olReqs.requests;
+                if (intList?.intents) latestAuthedCache.intents = intList.intents;
+                if (latestState) {
+                  applyAuthedCacheToState(latestState);
+                  renderAll();
+                }
               }
             })
           : Promise.resolve();
@@ -2880,6 +2925,16 @@
         banner.className = "banner-note neg";
         banner.textContent = err.message;
         banner.style.display = "flex";
+      }
+      })();
+      try {
+        await inFlightRefreshPromise;
+      } finally {
+        inFlightRefreshPromise = null;
+        if (refreshQueued) {
+          refreshQueued = false;
+          void refreshAll();
+        }
       }
     }
 
@@ -4581,6 +4636,9 @@
       if (active && active.accountId) {
         applyConnectedAccount(active.accountId, active.walletId);
         await refreshConnectedAccountBalance();
+        if (isWalletTokenValidForAccount(walletSessionToken, active.accountId)) {
+          void refreshAll();
+        }
       }
     }
 
@@ -4641,6 +4699,7 @@
           }, null, 2);
         }
         showToast(`Authenticated ${connectedAccountId} via NEP-413.`);
+        await refreshAll();
       } catch (e) {
         showToast(`Wallet verification: ${e.message}`);
       }
