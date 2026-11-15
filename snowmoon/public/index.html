@@ -1583,6 +1583,70 @@
       flex-wrap: wrap;
     }
 
+    /* Clean Settings Rows & Collapsible Debug Details */
+    .settings-rows {
+      display: flex;
+      flex-direction: column;
+    }
+    .settings-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 13px;
+    }
+    .settings-row:last-child { border-bottom: none; padding-bottom: 2px; }
+    .settings-row:first-child { padding-top: 2px; }
+    .settings-k {
+      color: var(--muted);
+      font-weight: 500;
+      flex-shrink: 0;
+    }
+    .settings-v {
+      color: var(--text);
+      font-weight: 500;
+      text-align: right;
+      display: inline-flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      flex-wrap: wrap;
+      min-width: 0;
+      word-break: break-word;
+    }
+    .settings-pill {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+      background: var(--panel-2);
+      color: var(--muted);
+      border: 1px solid var(--border);
+    }
+    .settings-pill.ok {
+      background: var(--pos-bg);
+      color: var(--pos);
+      border-color: var(--pos-border);
+    }
+    .settings-debug-details {
+      margin-top: 14px;
+      border-top: 1px solid var(--border);
+      padding-top: 10px;
+    }
+    .settings-debug-details summary {
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--muted);
+      user-select: none;
+    }
+    .settings-debug-details summary:hover { color: var(--text); }
+    .settings-debug-details .code-box { margin-top: 10px; max-height: 220px; }
+
     /* Live Shimmer Skeleton Loaders */
     .skeleton {
       display: inline-block;
@@ -2396,39 +2460,65 @@
         <div class="grid-2">
           <div class="card">
             <div class="card-head">
-              <span class="card-title">Wallet Session Authentication</span>
-              <span class="provenance">Mainnet wallet signature verification</span>
+              <span class="card-title">Wallet &amp; Session</span>
+              <span class="provenance">NEAR Wallet Selector · NEP-413</span>
             </div>
-            <div class="form-grid">
-              <div class="form-group">
-                <label for="auth-account-id">NEAR Account ID</label>
-                <input id="auth-account-id" placeholder="e.g. cryptozax.near" />
-              </div>
-              <div class="form-group">
-                <label for="auth-wallet-type">Wallet Provider</label>
-                <select id="auth-wallet-type">
-                  <option value="meteor">Meteor Wallet</option>
-                  <option value="mynearwallet">MyNearWallet</option>
-                  <option value="wallet-selector">NEAR Wallet Selector</option>
-                </select>
-              </div>
+            <div id="settings-wallet-rows" class="settings-rows">
+              <div class="settings-row"><span class="settings-k">Status</span><span class="settings-v"><span class="settings-pill">Loading...</span></span></div>
             </div>
-            <div style="display:flex; flex-wrap:wrap; gap:8px;">
-              <button class="btn btn-primary" onclick="openWalletModal()">Connect NEAR Wallet (Selector)</button>
-              <button class="btn" onclick="authenticateConnectedWallet()">Sign NEP-413 Session</button>
-              <button class="btn" onclick="openWalletModal()">Switch Account</button>
-              <button class="btn" onclick="disconnectWalletSession()">Disconnect</button>
+            <div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:16px;">
+              <button class="btn btn-primary" id="settings-connect-btn" onclick="openWalletModal()">Connect Wallet</button>
+              <button class="btn" id="settings-resign-btn" onclick="authenticateConnectedWallet()" style="display:none;">Re-sign NEP-413</button>
+              <button class="btn" id="settings-switch-btn" onclick="openWalletModal()" style="display:none;">Switch Account</button>
+              <button class="btn" id="settings-disconnect-btn" onclick="disconnectWalletSession()" style="display:none;">Disconnect</button>
             </div>
-            <p class="stat-sub" style="margin-top:10px;">Uses official NEAR Wallet Selector (MyNearWallet, Meteor, HERE) and cryptographic NEP-413 challenge signing. Private keys are never requested.</p>
-            <pre id="auth-account-info" class="code-box" style="display:none;"></pre>
+            <p class="stat-sub" style="margin-top:12px;">Non-custodial Wallet Selector session with cryptographic NEP-413 signature verification. Private keys never leave your wallet.</p>
+            <details class="settings-debug-details" id="settings-session-debug" style="display:none;">
+              <summary>Inspect Session JSON</summary>
+              <pre id="auth-account-info" class="code-box"></pre>
+            </details>
           </div>
 
           <div class="card">
             <div class="card-head">
-              <span class="card-title">Infrastructure &amp; Credential Presence</span>
-              <span class="provenance">Presence booleans only — secrets never exposed</span>
+              <span class="card-title">Network &amp; Infrastructure</span>
+              <span class="provenance">Live Mainnet &amp; service health</span>
             </div>
-            <div id="settings-infra-box" class="mono" style="color:var(--text-2); line-height:1.85;">Loading system configuration...</div>
+            <div id="settings-infra-box" class="settings-rows">
+              <div class="settings-row"><span class="settings-k">Status</span><span class="settings-v"><span class="settings-pill">Loading...</span></span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:18px;">
+          <div class="card-head">
+            <span class="card-title">Preferences &amp; Legal</span>
+            <span class="provenance">Browser preferences · Beta Phase</span>
+          </div>
+          <div class="settings-rows">
+            <div class="settings-row">
+              <span class="settings-k">Appearance</span>
+              <span class="settings-v">
+                <span id="settings-theme-label">Dark</span>
+                <button type="button" class="btn" style="padding:5px 12px;font-size:12px;" onclick="toggleTheme()">Toggle Theme</button>
+              </span>
+            </div>
+            <div class="settings-row">
+              <span class="settings-k">Saved Job Drafts</span>
+              <span class="settings-v">
+                <button type="button" class="btn" style="padding:5px 12px;font-size:12px;" onclick="clearSavedJobDrafts()">Clear Local Drafts</button>
+              </span>
+            </div>
+            <div class="settings-row">
+              <span class="settings-k">Terms &amp; Risk Disclosure</span>
+              <span class="settings-v">
+                <span id="settings-legal-pill" class="settings-pill">Pending</span>
+                <a href="/terms" target="_blank" rel="noopener">Terms</a>
+                <a href="/privacy" target="_blank" rel="noopener">Privacy</a>
+                <a href="/risk" target="_blank" rel="noopener">Risk</a>
+                <a href="/security" target="_blank" rel="noopener">Security</a>
+              </span>
+            </div>
           </div>
         </div>
       </section>
@@ -2545,6 +2635,19 @@
       if (next === "light") document.documentElement.dataset.theme = "light";
       else delete document.documentElement.dataset.theme;
       try { localStorage.setItem("snowmoon-theme", next); } catch (_) {}
+      const lbl = document.getElementById("settings-theme-label");
+      if (lbl) lbl.textContent = next === "light" ? "Light" : "Dark";
+    }
+
+    function clearSavedJobDrafts() {
+      try {
+        localStorage.removeItem("snowmoon_job_draft_v1");
+      } catch (_) {}
+      ["job-title", "job-prompt", "job-target-link"].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.value = "";
+      });
+      showToast("Saved job drafts cleared.");
     }
 
     function switchView(viewName) {
@@ -3478,16 +3581,55 @@
         }
       }
 
-      // 7. Settings (presence checks only, zero secrets)
+      // 7. Settings (clean structured rows, no raw debug dumps)
+      const walletRowsEl = document.getElementById("settings-wallet-rows");
+      const hasSession = Boolean(connectedAccountId && walletSessionToken);
+      const isConnected = Boolean(connectedAccountId);
+      if (walletRowsEl) {
+        const balStr = connectedAccountBalance
+          ? `${connectedAccountBalance.nearFormatted || "0.00"} NEAR · ${connectedAccountBalance.usdcFormatted || "0.00"} USDC`
+          : (isConnected ? "Loading..." : "—");
+        walletRowsEl.innerHTML =
+          `<div class="settings-row"><span class="settings-k">Account</span><span class="settings-v mono">${isConnected ? esc(connectedAccountId) : "Not connected"}</span></div>` +
+          `<div class="settings-row"><span class="settings-k">Wallet Provider</span><span class="settings-v">${isConnected ? esc(connectedWalletId || "wallet-selector") : "—"}</span></div>` +
+          `<div class="settings-row"><span class="settings-k">Session Auth</span><span class="settings-v"><span class="settings-pill ${hasSession ? "ok" : ""}">${hasSession ? "Verified (NEP-413)" : (isConnected ? "Read-only" : "Disconnected")}</span></span></div>` +
+          `<div class="settings-row"><span class="settings-k">Wallet Balances</span><span class="settings-v mono">${esc(balStr)}</span></div>`;
+      }
+      const sConnBtn = document.getElementById("settings-connect-btn");
+      const sResignBtn = document.getElementById("settings-resign-btn");
+      const sSwitchBtn = document.getElementById("settings-switch-btn");
+      const sDiscBtn = document.getElementById("settings-disconnect-btn");
+      if (sConnBtn) sConnBtn.style.display = isConnected ? "none" : "inline-flex";
+      if (sResignBtn) sResignBtn.style.display = isConnected ? "inline-flex" : "none";
+      if (sSwitchBtn) sSwitchBtn.style.display = isConnected ? "inline-flex" : "none";
+      if (sDiscBtn) sDiscBtn.style.display = isConnected ? "inline-flex" : "none";
+
+      const sThemeLbl = document.getElementById("settings-theme-label");
+      if (sThemeLbl) {
+        sThemeLbl.textContent = document.documentElement.dataset.theme === "light" ? "Light" : "Dark";
+      }
+      const sLegalPill = document.getElementById("settings-legal-pill");
+      if (sLegalPill) {
+        const accepted = hasAcceptedLegalTerms();
+        sLegalPill.textContent = accepted ? "Accepted" : "Pending";
+        sLegalPill.classList.toggle("ok", accepted);
+      }
+
       const db = latestHealth?.database;
       const ai = latestHealth?.ai;
+      const pilotCfg = latestState?.environment?.pilot || latestHealth?.pilot;
+      const capUsdcText = pilotCfg?.enabled && pilotCfg?.maxJobUsdcAtomic
+        ? `$${(Number(pilotCfg.maxJobUsdcAtomic) / 1e6).toFixed(2)} USDC / job`
+        : "Standard";
+      const netLabel = net === "mainnet" ? "NEAR Mainnet" : esc(net);
       document.getElementById("settings-infra-box").innerHTML =
-        `Network: <strong>${esc(net)}</strong> · Production Mode: <strong>${Boolean(latestHealth?.isProductionMode)}</strong> · Live Tx Broadcast: <strong>${Boolean(latestHealth?.liveTxBroadcastingEnabled)}</strong><br/>` +
-        `Core Contract: <strong>${esc(coreId)}</strong> · Audit Contract: <strong>${esc(auditId)}</strong><br/>` +
-        `Supabase: <strong>${esc(db?.backend || "unknown")}</strong> · Connected: <strong>${Boolean(db?.connected)}</strong> · RLS Hardened: <strong>${Boolean(db?.rlsHardened)}</strong> (${esc(db?.migrationVersion || "-")})<br/>` +
-        `AI Provider: <strong>${esc(ai?.mode || "unknown")}</strong> · Key Present: <strong>${Boolean(ai?.hasApiKey)}</strong> · Model: <strong>${esc(ai?.configuredModel || "-")}</strong><br/>` +
-        `OutLayer TEE: <strong>${esc(ol?.mode || "unknown")}</strong> · Key Present: <strong>${Boolean(ol?.hasPaymentKey)}</strong> · Pinned WASM: <strong>${Boolean(ol?.expectedWasmHashConfigured)}</strong><br/>` +
-        `Requests: <strong>${latestHealth?.metrics?.requestsTotal ?? 0}</strong> · 4xx: <strong>${latestHealth?.metrics?.errors4xx ?? 0}</strong> · 5xx: <strong>${latestHealth?.metrics?.errors5xx ?? 0}</strong>`;
+        `<div class="settings-row"><span class="settings-k">Network</span><span class="settings-v"><span>${netLabel}</span><span class="settings-pill ok">Active</span></span></div>` +
+        `<div class="settings-row"><span class="settings-k">Core Escrow &amp; FloatPool</span><span class="settings-v mono"><a href="https://nearblocks.io/address/${esc(coreId)}" target="_blank" rel="noopener">${esc(coreId)}</a></span></div>` +
+        `<div class="settings-row"><span class="settings-k">AuditAnchor Registry</span><span class="settings-v mono"><a href="https://nearblocks.io/address/${esc(auditId)}" target="_blank" rel="noopener">${esc(auditId)}</a></span></div>` +
+        `<div class="settings-row"><span class="settings-k">AI Engine</span><span class="settings-v"><span>${esc(ai?.configuredModel || "deepseek/deepseek-v3.2")}</span><span class="settings-pill ${ai?.hasApiKey ? "ok" : ""}">${ai?.hasApiKey ? "Online" : "Offline"}</span></span></div>` +
+        `<div class="settings-row"><span class="settings-k">TEE Attestation</span><span class="settings-v"><span>OutLayer (${esc(ol?.mode || "live_outlayer")})</span><span class="settings-pill ${ol?.expectedWasmHashConfigured ? "ok" : ""}">${ol?.expectedWasmHashConfigured ? "Pinned WASM" : "Active"}</span></span></div>` +
+        `<div class="settings-row"><span class="settings-k">Database</span><span class="settings-v"><span>Supabase${db?.rlsHardened ? " · RLS" : ""}</span><span class="settings-pill ${db?.connected ? "ok" : ""}">${db?.connected ? "Connected" : "Offline"}</span></span></div>` +
+        `<div class="settings-row"><span class="settings-k">Beta Phase Limit</span><span class="settings-v"><span class="settings-pill">${esc(capUsdcText)}</span></span></div>`;
     }
 
     let jobFundingInFlight = false;
@@ -4923,14 +5065,15 @@
         applyConnectedAccount(verified.session?.accountId || accountId, walletType);
         await refreshConnectedAccountBalance();
         const box = document.getElementById("auth-account-info");
+        const debugDetails = document.getElementById("settings-session-debug");
         if (box) {
-          box.style.display = "block";
           box.textContent = JSON.stringify({
             authenticated: Boolean(walletSessionToken),
             session: verified.session,
             customerState: verified.customerState,
           }, null, 2);
         }
+        if (debugDetails) debugDetails.style.display = "block";
         showToast(`Authenticated ${connectedAccountId} via NEP-413.`);
         await refreshAll();
       } catch (e) {
@@ -4991,7 +5134,9 @@
       removeStoredWalletItem("snowmoon_wallet_account");
       removeStoredWalletItem("snowmoon_wallet_id");
       const box = document.getElementById("auth-account-info");
-      if (box) box.style.display = "none";
+      if (box) box.textContent = "";
+      const debugDetails = document.getElementById("settings-session-debug");
+      if (debugDetails) debugDetails.style.display = "none";
       renderAll();
       showToast("Wallet disconnected.");
     }
