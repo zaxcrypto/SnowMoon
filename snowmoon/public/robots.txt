@@ -1,0 +1,9 @@
+User-agent: *
+Allow: /
+Allow: /terms
+Allow: /privacy
+Allow: /risk
+Allow: /security
+Disallow: /api/
+
+Sitemap: https://snowmoon.website/sitemap.xml

@@ -3102,7 +3102,15 @@ export function createSnowMoonApp(
               ? "application/javascript; charset=utf-8"
               : ext === ".css"
                 ? "text/css; charset=utf-8"
-                : "application/octet-stream";
+                : ext === ".txt"
+                  ? "text/plain; charset=utf-8"
+                  : ext === ".xml"
+                    ? "application/xml; charset=utf-8"
+                    : ext === ".json"
+                      ? "application/json; charset=utf-8"
+                      : ext === ".svg"
+                        ? "image/svg+xml"
+                        : "application/octet-stream";
         res.writeHead(200, {
           "Content-Type": contentType,
           "X-Content-Type-Options": "nosniff",
