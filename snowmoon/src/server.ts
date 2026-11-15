@@ -3075,11 +3075,18 @@ export function createSnowMoonApp(
         return;
       }
 
-      // Serve static dashboard UI from public/
-      const filePath =
-        pathname === "/"
-          ? path.join(publicDir, "index.html")
-          : path.resolve(publicDir, pathname.replace(/^\/+/, ""));
+      // Serve static dashboard UI & clean legal/security routes from public/
+      const cleanRouteMap: Record<string, string> = {
+        "/": "index.html",
+        "/terms": "terms.html",
+        "/privacy": "privacy.html",
+        "/risk": "risk.html",
+        "/security": "security.html",
+      };
+      const mappedFile = cleanRouteMap[pathname];
+      const filePath = mappedFile
+        ? path.join(publicDir, mappedFile)
+        : path.resolve(publicDir, pathname.replace(/^\/+/, ""));
       const relativeToPublic = path.relative(publicDir, filePath);
       const isInsidePublic =
         relativeToPublic !== "" &&

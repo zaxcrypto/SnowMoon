@@ -1449,6 +1449,137 @@
       flex-wrap: wrap;
     }
 
+    /* Polymarket-style Bottom Footer & Pre-Wallet Legal Gate Modal */
+    .site-footer {
+      margin-top: 44px;
+      padding: 22px 4px 28px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      color: var(--muted-2);
+      font-size: 12.5px;
+    }
+    .site-footer-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+    .site-footer-links {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    .site-footer-links a {
+      color: var(--muted);
+      text-decoration: none;
+      font-weight: 500;
+      transition: color 0.15s ease;
+    }
+    .site-footer-links a:hover {
+      color: var(--text);
+      text-decoration: underline;
+    }
+    .site-footer-brand {
+      color: var(--text-2);
+      font-weight: 600;
+    }
+    .site-footer-note {
+      font-size: 11.5px;
+      line-height: 1.55;
+      color: var(--muted-2);
+      max-width: 920px;
+    }
+    .site-footer-note a {
+      color: var(--muted);
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
+    .site-footer-note a:hover { color: var(--text); }
+
+    .legal-gate-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 1200;
+      background: rgba(0, 0, 0, 0.62);
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    .legal-gate-backdrop.is-open { display: flex; }
+    .legal-gate-card {
+      width: 100%;
+      max-width: 480px;
+      background: var(--panel);
+      border: 1px solid var(--border-2);
+      border-radius: 20px;
+      padding: 24px;
+      box-shadow: 0 24px 64px rgba(0, 0, 0, 0.45);
+      color: var(--text);
+    }
+    .legal-gate-title {
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin: 0 0 6px;
+    }
+    .legal-gate-sub {
+      font-size: 13px;
+      color: var(--muted);
+      margin: 0 0 14px;
+      line-height: 1.5;
+    }
+    .legal-gate-points {
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px 14px;
+      margin: 0 0 16px;
+      font-size: 12.5px;
+      line-height: 1.55;
+      color: var(--text-2);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .legal-gate-points strong { color: var(--text); }
+    .legal-gate-check {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      font-size: 12.5px;
+      color: var(--text-2);
+      line-height: 1.45;
+      margin-bottom: 18px;
+      cursor: pointer;
+    }
+    .legal-gate-check input {
+      margin-top: 2px;
+      width: 16px;
+      height: 16px;
+      accent-color: #00c08b;
+      flex-shrink: 0;
+      cursor: pointer;
+    }
+    .legal-gate-check a {
+      color: var(--text);
+      font-weight: 600;
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
+    .legal-gate-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
     /* Live Shimmer Skeleton Loaders */
     .skeleton {
       display: inline-block;
@@ -2298,7 +2429,48 @@
           </div>
         </div>
       </section>
+      <footer class="site-footer" aria-label="Legal &amp; Platform Links">
+        <div class="site-footer-top">
+          <div class="site-footer-links">
+            <span class="site-footer-brand">SnowMoon © 2026</span>
+            <a href="/terms" target="_blank" rel="noopener">Terms of Service</a>
+            <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>
+            <a href="/risk" target="_blank" rel="noopener">Risk Disclosure</a>
+            <a href="/security" target="_blank" rel="noopener">Security &amp; Contracts</a>
+            <a href="https://github.com/zaxcrypto/SnowMoon" target="_blank" rel="noopener">GitHub</a>
+          </div>
+          <span class="mono" style="font-size:11.5px;color:var(--muted);">NEAR Mainnet · Beta Phase</span>
+        </div>
+        <div class="site-footer-note">
+          SnowMoon is a non-custodial autonomous AI workforce interface on NEAR Mainnet (<code>core.cryptozax.near</code> · <code>audit.cryptozax.near</code>). AI outputs and security audits are informational only — not certified audits or financial/legal advice. Beta testing is capped at $1.00 USDC/job and involves smart-contract and third-party API risk. See <a href="/terms" target="_blank" rel="noopener">Terms of Service</a>, <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>, and <a href="/risk" target="_blank" rel="noopener">Risk Disclosure</a>.
+        </div>
+      </footer>
     </main>
+  </div>
+
+  <div class="legal-gate-backdrop" id="legal-gate-modal" role="dialog" aria-modal="true" aria-labelledby="legal-gate-title">
+    <div class="legal-gate-card">
+      <h2 class="legal-gate-title" id="legal-gate-title">Before You Connect Your Wallet</h2>
+      <p class="legal-gate-sub">Please review and accept SnowMoon's Beta Phase terms before connecting a NEAR Mainnet wallet.</p>
+      <div class="legal-gate-points">
+        <div><strong>1. Non-Custodial Interface:</strong> You keep full control of your keys and sign every Mainnet transaction directly.</div>
+        <div><strong>2. Beta Cap ($1.00 USDC/job) &amp; AI Notice:</strong> AI deliverables (including Security Audits) are informational only. Never submit private keys or secrets.</div>
+        <div><strong>3. On-Chain &amp; Third-Party Risk:</strong> Smart contracts, FloatPool, NEAR Intents bridge, OutLayer TEE, and x402 agents carry financial and technical risk.</div>
+      </div>
+      <label class="legal-gate-check">
+        <input type="checkbox" id="legal-gate-checkbox" />
+        <span>
+          I have read and agree to the
+          <a href="/terms" target="_blank" rel="noopener">Terms of Service</a>,
+          <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>, and
+          <a href="/risk" target="_blank" rel="noopener">Risk Disclosure</a>.
+        </span>
+      </label>
+      <div class="legal-gate-actions">
+        <button type="button" class="btn btn-secondary" id="legal-gate-cancel">Cancel</button>
+        <button type="button" class="btn btn-near-green" id="legal-gate-accept" disabled>Accept &amp; Connect Wallet</button>
+      </div>
+    </div>
   </div>
 
   <div class="toast" id="toast"></div>
@@ -4650,7 +4822,57 @@
       }
     }
 
-    async function openWalletModal() {
+    const LEGAL_ACCEPTANCE_KEY = "snowmoon_legal_accepted_v1";
+
+    function hasAcceptedLegalTerms() {
+      try {
+        return localStorage.getItem(LEGAL_ACCEPTANCE_KEY) === "1";
+      } catch (_) {
+        return false;
+      }
+    }
+
+    function openLegalGateModal() {
+      const modal = document.getElementById("legal-gate-modal");
+      const cb = document.getElementById("legal-gate-checkbox");
+      const acceptBtn = document.getElementById("legal-gate-accept");
+      if (!modal || !cb || !acceptBtn) return false;
+      cb.checked = false;
+      acceptBtn.disabled = true;
+      modal.classList.add("is-open");
+      return true;
+    }
+
+    (function wireLegalGateModal() {
+      const modal = document.getElementById("legal-gate-modal");
+      const cb = document.getElementById("legal-gate-checkbox");
+      const cancelBtn = document.getElementById("legal-gate-cancel");
+      const acceptBtn = document.getElementById("legal-gate-accept");
+      if (!modal || !cb || !cancelBtn || !acceptBtn) return;
+      cb.addEventListener("change", () => {
+        acceptBtn.disabled = !cb.checked;
+      });
+      cancelBtn.addEventListener("click", () => {
+        modal.classList.remove("is-open");
+      });
+      modal.addEventListener("click", (e) => {
+        if (e.target === modal) modal.classList.remove("is-open");
+      });
+      acceptBtn.addEventListener("click", async () => {
+        if (!cb.checked) return;
+        try {
+          localStorage.setItem(LEGAL_ACCEPTANCE_KEY, "1");
+          localStorage.setItem("snowmoon_legal_accepted_at", new Date().toISOString());
+        } catch (_) {}
+        modal.classList.remove("is-open");
+        await openWalletModal(true);
+      });
+    })();
+
+    async function openWalletModal(skipLegalCheck = false) {
+      if (!skipLegalCheck && !hasAcceptedLegalTerms()) {
+        if (openLegalGateModal()) return;
+      }
       try {
         await initWalletSelector();
         if (!window.SnowMoonWalletSelector) {

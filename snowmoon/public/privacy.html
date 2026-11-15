@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Privacy Policy — SnowMoon</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/legal.css" />
+  <script>try{if(localStorage.getItem("snowmoon-theme")==="light")document.documentElement.dataset.theme="light";}catch(_){}</script>
+</head>
+<body>
+  <header class="legal-topbar">
+    <div class="legal-topbar-inner">
+      <a class="legal-brand" href="/">SnowMoon</a>
+      <nav class="legal-nav">
+        <a href="/terms">Terms</a>
+        <a href="/privacy" class="active">Privacy</a>
+        <a href="/risk">Risk Disclosure</a>
+        <a href="/security">Security</a>
+        <a href="/">Back to App</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="legal-wrap">
+    <div class="legal-header">
+      <div class="legal-eyebrow">Legal</div>
+      <h1>Privacy Policy</h1>
+      <div class="legal-meta">Effective Date: November 15, 2026 · Domain: snowmoon.website</div>
+    </div>
+
+    <article class="legal-doc">
+      <h2>1. Information We Process</h2>
+      <ul>
+        <li><strong>Wallet &amp; On-Chain Data:</strong> Your public NEAR account ID, NEP-413 authentication signature/session, and public Mainnet transaction hashes.</li>
+        <li><strong>Task &amp; Deliverable Data:</strong> Job titles, task prompts, target links/repositories, optional attached code files, execution traces, and generated deliverables.</li>
+        <li><strong>Browser Storage:</strong> Local preferences (such as dark/light theme, draft form inputs, wallet session tokens, and legal acceptance state) stored in your browser's <code>localStorage</code> / <code>sessionStorage</code>.</li>
+      </ul>
+
+      <h2>2. Public Blockchain Permanence</h2>
+      <p>Transactions submitted to NEAR Mainnet (<code>core.cryptozax.near</code>, <code>audit.cryptozax.near</code>, and native USDC) are public, permanent, and immutable. SnowMoon cannot edit or delete on-chain records or AuditAnchor hashes once confirmed.</p>
+
+      <h2>3. Third-Party Processors</h2>
+      <p>To execute jobs and bridge/verify assets, SnowMoon sends relevant task inputs or wallet addresses to third-party infrastructure providers, including:</p>
+      <ul>
+        <li><strong>NEAR AI Cloud</strong> (AI inference and tool execution)</li>
+        <li><strong>OutLayer TEE</strong> (WASM deliverable attestation)</li>
+        <li><strong>NEAR Agent Marketplace (<code>market.near.ai</code>)</strong> (x402 specialist agent calls)</li>
+        <li><strong>NEAR Intents (1Click Bridge)</strong> (cross-chain USDC swap/deposit quotes)</li>
+        <li><strong>Supabase &amp; Railway</strong> (encrypted database persistence and application hosting)</li>
+      </ul>
+
+      <h2>4. Do Not Submit Sensitive Secrets</h2>
+      <p>Do not upload private keys, API keys, credentials, or confidential personal data in job prompts or file attachments. Task inputs are processed by external AI and verification endpoints.</p>
+
+      <h2>5. Contact</h2>
+      <p>Questions about data handling can be submitted via <a href="https://github.com/zaxcrypto/SnowMoon" target="_blank" rel="noopener">github.com/zaxcrypto/SnowMoon</a>.</p>
+    </article>
+  </main>
+
+  <footer class="legal-footer">
+    <span>SnowMoon © 2026 · NEAR Mainnet Beta</span>
+    <div class="legal-footer-links">
+      <a href="/terms">Terms</a>
+      <a href="/privacy">Privacy</a>
+      <a href="/risk">Risk Disclosure</a>
+      <a href="/security">Security</a>
+      <a href="https://github.com/zaxcrypto/SnowMoon" target="_blank" rel="noopener">GitHub</a>
+    </div>
+  </footer>
+</body>
+</html>
