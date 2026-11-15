@@ -2650,17 +2650,34 @@
       showToast("Saved job drafts cleared.");
     }
 
-    function switchView(viewName) {
+    function resolveViewFromPath(pathname) {
+      const slug = String(pathname || "/").replace(/^\/+|\/+$/g, "").toLowerCase();
+      return slug && VIEW_META[slug] ? slug : "overview";
+    }
+
+    function switchView(viewName, updateUrl = true) {
+      const targetView = VIEW_META[viewName] ? viewName : "overview";
       document.querySelectorAll(".nav-link").forEach((el) => {
-        el.classList.toggle("active", el.dataset.view === viewName);
+        el.classList.toggle("active", el.dataset.view === targetView);
       });
       document.querySelectorAll(".view-section").forEach((sec) => {
-        sec.classList.toggle("active", sec.id === `view-${viewName}`);
+        sec.classList.toggle("active", sec.id === `view-${targetView}`);
       });
-      const meta = VIEW_META[viewName] || VIEW_META.overview;
+      const meta = VIEW_META[targetView] || VIEW_META.overview;
       document.getElementById("page-title").textContent = meta.title;
       document.getElementById("page-sub").textContent = meta.sub;
+      if (updateUrl && window.history && typeof window.history.pushState === "function") {
+        const nextPath = `/${targetView}`;
+        if (window.location.pathname !== nextPath) {
+          window.history.pushState({ view: targetView }, "", nextPath + window.location.search + window.location.hash);
+        }
+      }
     }
+
+    window.addEventListener("popstate", () => {
+      switchView(resolveViewFromPath(window.location.pathname), false);
+    });
+    switchView(resolveViewFromPath(window.location.pathname), false);
 
     const COPY_ICON_SVG = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>`;
 

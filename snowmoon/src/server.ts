@@ -3075,9 +3075,16 @@ export function createSnowMoonApp(
         return;
       }
 
-      // Serve static dashboard UI & clean legal/security routes from public/
+      // Serve static dashboard UI & clean app/legal routes from public/
       const cleanRouteMap: Record<string, string> = {
         "/": "index.html",
+        "/overview": "index.html",
+        "/jobs": "index.html",
+        "/workforce": "index.html",
+        "/approvals": "index.html",
+        "/float": "index.html",
+        "/audit": "index.html",
+        "/settings": "index.html",
         "/terms": "terms.html",
         "/privacy": "privacy.html",
         "/risk": "risk.html",
