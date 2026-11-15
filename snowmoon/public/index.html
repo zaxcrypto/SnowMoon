@@ -1897,8 +1897,11 @@
             </div>
 
             <div class="form-group" style="margin-bottom:12px;">
-              <label for="job-prompt" style="margin-bottom:6px;">Describe Task</label>
-              <textarea id="job-prompt" rows="5" placeholder="Describe what to audit (e.g. scope, key concerns)..." oninput="saveCreateJobDraft()"></textarea>
+              <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px;">
+                <label for="job-prompt" style="margin-bottom:0;">Describe Task</label>
+                <span id="job-prompt-count" class="stat-sub">0 / 500</span>
+              </div>
+              <textarea id="job-prompt" rows="5" maxlength="500" placeholder="Describe what to audit (e.g. scope, key concerns)..." oninput="updateJobPromptCount(); saveCreateJobDraft();"></textarea>
               <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; margin-top:8px;">
                 <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
                   <input id="job-code-file" type="file" accept=".rs,.ts,.tsx,.js,.jsx,.sol,.py,.go,.move,.md,.json,.txt,.toml" style="display:none;" onchange="handleJobCodeFileSelect(this)" />
@@ -3737,11 +3740,23 @@
 
     const CREATE_JOB_DRAFT_KEY = "snowmoon_create_job_draft";
 
+    function updateJobPromptCount() {
+      const promptEl = document.getElementById("job-prompt");
+      const countEl = document.getElementById("job-prompt-count");
+      if (!promptEl || !countEl) return;
+      if (promptEl.value.length > 500) {
+        promptEl.value = promptEl.value.slice(0, 500);
+      }
+      const len = promptEl.value.length;
+      countEl.textContent = `${len} / 500`;
+      countEl.style.color = len >= 480 ? "var(--warn)" : "";
+    }
+
     function saveCreateJobDraft() {
       try {
         const draft = {
           title: document.getElementById("job-title")?.value || "",
-          prompt: document.getElementById("job-prompt")?.value || "",
+          prompt: (document.getElementById("job-prompt")?.value || "").slice(0, 500),
           targetLink: document.getElementById("job-target-link")?.value || "",
           capability: document.getElementById("job-capability")?.value || "security-audit",
           amountUsdc: document.getElementById("job-amount-usdc")?.value || "0.10",
@@ -3762,11 +3777,12 @@
         const capEl = document.getElementById("job-capability");
         const amtEl = document.getElementById("job-amount-usdc");
         if (titleEl && typeof draft.title === "string") titleEl.value = draft.title;
-        if (promptEl && typeof draft.prompt === "string") promptEl.value = draft.prompt;
+        if (promptEl && typeof draft.prompt === "string") promptEl.value = draft.prompt.slice(0, 500);
         if (linkEl && typeof draft.targetLink === "string") linkEl.value = draft.targetLink;
         if (capEl && typeof draft.capability === "string" && JOB_CAPABILITY_HINTS[draft.capability]) capEl.value = draft.capability;
         if (amtEl && typeof draft.amountUsdc === "string" && draft.amountUsdc) amtEl.value = draft.amountUsdc;
       } catch (_) {}
+      updateJobPromptCount();
     }
 
     function clearCreateJobDraft() {
@@ -4304,6 +4320,7 @@
           const titleEl = document.getElementById("job-title");
           if (titleEl) titleEl.value = "";
           document.getElementById("job-prompt").value = "";
+          updateJobPromptCount();
           const linkEl = document.getElementById("job-target-link");
           if (linkEl) linkEl.value = "";
           clearAttachedJobCodeFile();
