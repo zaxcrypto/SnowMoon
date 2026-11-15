@@ -1617,5 +1617,167 @@ export class NearMainnetRpcAdapter {
       ],
     };
   }
+
+  private async callCoreMethodAsOperator(
+    methodName: "start_work" | "submit_delivery",
+    args: Record<string, unknown>,
+    gas = 80_000_000_000_000n
+  ): Promise<{ txHash: string }> {
+    const operatorId = assertValidNearAccountId(
+      this.config.mainnetOperatorAccountId,
+      "mainnetOperatorAccountId"
+    );
+    const privateKey = (
+      this.config.secrets.operatorPrivateKey ||
+      process.env.NEAR_PRIVATE_KEY ||
+      ""
+    ).trim();
+    if (!privateKey) {
+      throw new Error(
+        "ERR_OPERATOR_SIGNER_UNCONFIGURED: NEAR_PRIVATE_KEY / SNOWMOON_OPERATOR_PRIVATE_KEY is required on the backend for autonomous operator execution."
+      );
+    }
+
+    const naj = (await import("near-api-js")) as unknown as {
+      connect: (cfg: Record<string, unknown>) => Promise<{
+        account: (id: string) => Promise<{
+          functionCall: (opts: {
+            contractId: string;
+            methodName: string;
+            args: Record<string, unknown>;
+            gas: bigint;
+            attachedDeposit: bigint;
+          }) => Promise<{
+            transaction?: { hash?: string };
+            transaction_outcome?: { id?: string };
+          }>;
+        }>;
+      }>;
+      KeyPair: { fromString: (k: string) => unknown };
+      keyStores: { InMemoryKeyStore: new () => { setKey: (net: string, id: string, kp: unknown) => Promise<void> } };
+    };
+
+    const keyStore = new naj.keyStores.InMemoryKeyStore();
+    await keyStore.setKey("mainnet", operatorId, naj.KeyPair.fromString(privateKey));
+
+    let lastErr: unknown = "Unknown RPC error";
+    for (const nodeUrl of this.getRpcCandidates()) {
+      try {
+        const near = await naj.connect({
+          networkId: "mainnet",
+          nodeUrl,
+          keyStore,
+        });
+        const account = await near.account(operatorId);
+        const outcome = await account.functionCall({
+          contractId: this.config.mainnetCoreContractId,
+          methodName,
+          args,
+          gas,
+          attachedDeposit: 0n,
+        });
+        const txHash =
+          outcome?.transaction?.hash || outcome?.transaction_outcome?.id || "";
+        return { txHash };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        // Do not retry on deterministic contract panics (ERR_NOT_OPERATOR, ERR_INVALID_STATUS, etc.)
+        if (msg.includes("Smart contract panicked") || msg.includes("ERR_")) {
+          throw err;
+        }
+        lastErr = err;
+      }
+    }
+    throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+  }
+
+  public async operatorStartWork(jobId: string): Promise<{
+    ok: true;
+    status: string;
+    txHash: string | null;
+    alreadyInState: boolean;
+  }> {
+    const jobIdHex = normalizeHex32Lowercase(jobId, "jobId");
+    const coreJobRes = await this.queryCoreJob(jobIdHex);
+    if (!coreJobRes.ok || !coreJobRes.data) {
+      throw new Error(coreJobRes.error || `ERR_UNKNOWN_JOB: Job ${jobIdHex} not found on-chain.`);
+    }
+    const status = coreJobRes.data.status;
+    if (status === "InProgress" || status === "Delivered" || status === "Accepted") {
+      return { ok: true, status, txHash: null, alreadyInState: true };
+    }
+    if (status !== "Funded") {
+      throw new Error(`ERR_INVALID_STATUS: On-chain job status is ${status} (expected Funded).`);
+    }
+    if (coreJobRes.data.operator !== this.config.mainnetOperatorAccountId) {
+      throw new Error(
+        `ERR_NOT_OPERATOR: On-chain operator is ${coreJobRes.data.operator}, expected ${this.config.mainnetOperatorAccountId}.`
+      );
+    }
+    const { txHash } = await this.callCoreMethodAsOperator("start_work", {
+      job_id: jobIdHex,
+    });
+    return { ok: true, status: "InProgress", txHash, alreadyInState: false };
+  }
+
+  public async operatorSubmitDelivery(
+    jobId: string,
+    deliveryHash: string
+  ): Promise<{
+    ok: true;
+    status: string;
+    txHash: string | null;
+    startWorkTxHash: string | null;
+    alreadyInState: boolean;
+  }> {
+    const jobIdHex = normalizeHex32Lowercase(jobId, "jobId");
+    const deliveryHashHex = normalizeHex32Lowercase(deliveryHash, "deliveryHash");
+    if (deliveryHashHex === "0x" + "00".repeat(32)) {
+      throw new Error("ERR_ZERO_HASH: deliveryHash must be non-zero.");
+    }
+    const coreJobRes = await this.queryCoreJob(jobIdHex);
+    if (!coreJobRes.ok || !coreJobRes.data) {
+      throw new Error(coreJobRes.error || `ERR_UNKNOWN_JOB: Job ${jobIdHex} not found on-chain.`);
+    }
+    let status = coreJobRes.data.status;
+    if (status === "Delivered" || status === "Accepted") {
+      return {
+        ok: true,
+        status,
+        txHash: null,
+        startWorkTxHash: null,
+        alreadyInState: true,
+      };
+    }
+    if (coreJobRes.data.operator !== this.config.mainnetOperatorAccountId) {
+      throw new Error(
+        `ERR_NOT_OPERATOR: On-chain operator is ${coreJobRes.data.operator}, expected ${this.config.mainnetOperatorAccountId}.`
+      );
+    }
+    let startWorkTxHash: string | null = null;
+    if (status === "Funded") {
+      const startRes = await this.callCoreMethodAsOperator("start_work", {
+        job_id: jobIdHex,
+      });
+      startWorkTxHash = startRes.txHash;
+      status = "InProgress";
+    }
+    if (status !== "InProgress") {
+      throw new Error(
+        `ERR_INVALID_STATUS: On-chain job status is ${status} (expected InProgress).`
+      );
+    }
+    const { txHash } = await this.callCoreMethodAsOperator("submit_delivery", {
+      job_id: jobIdHex,
+      delivery_hash: deliveryHashHex,
+    });
+    return {
+      ok: true,
+      status: "Delivered",
+      txHash,
+      startWorkTxHash,
+      alreadyInState: false,
+    };
+  }
 }
 

@@ -4498,41 +4498,50 @@
         };
 
         const runStartWorkIfNeeded = async () => {
-          if (!window.SnowMoonWalletSelector || !connectedAccountId) return "";
+          if (!connectedAccountId) return "";
           const onChainStatus = await getOnChainStatus();
           if (onChainStatus === "Funded") {
-            pushLiveTraceEvent({ jobId, stage: "escrow", status: "running", title: `Signing start_work on ${coreId}` });
-            showToast("Approve start_work in your NEAR wallet...");
-            await signPreparedTransactionsAndReconcile([
-              {
-                receiverId: coreId,
-                actions: [{ type: "FunctionCall", params: { methodName: "start_work", args: { job_id: jobId }, gas: "80000000000000", deposit: "0" } }],
-              },
-            ], (txHash) => {
-              pushLiveTraceEvent({ jobId, stage: "escrow", status: "ok", title: "On-chain start_work confirmed", txHash });
+            pushLiveTraceEvent({ jobId, stage: "escrow", status: "running", title: `Operator signing start_work on ${coreId}` });
+            const res = await apiFetch("/api/near/vault/operator-start-work", {
+              method: "POST",
+              body: JSON.stringify({ jobId }),
             });
-            return "InProgress";
+            pushLiveTraceEvent({
+              jobId,
+              stage: "escrow",
+              status: "ok",
+              title: "On-chain start_work confirmed",
+              txHash: res.txHash || undefined,
+            });
+            return res.status || "InProgress";
           }
           return onChainStatus;
         };
 
         const runSubmitDeliveryIfNeeded = async (evidenceHash) => {
-          if (!evidenceHash || !window.SnowMoonWalletSelector || !connectedAccountId) return;
-          const onChainStatus = await getOnChainStatus();
-          if (onChainStatus === "Funded") {
-            await runStartWorkIfNeeded();
-          }
+          if (!evidenceHash || !connectedAccountId) return;
           const latestStatus = await getOnChainStatus();
           if (latestStatus === "Funded" || latestStatus === "InProgress") {
-            pushLiveTraceEvent({ jobId, stage: "verification", status: "running", title: `Signing submit_delivery on ${coreId}`, detail: `Hash: ${evidenceHash}` });
-            showToast("Approve submit_delivery in your NEAR wallet...");
-            await signPreparedTransactionsAndReconcile([
-              {
-                receiverId: coreId,
-                actions: [{ type: "FunctionCall", params: { methodName: "submit_delivery", args: { job_id: jobId, delivery_hash: evidenceHash }, gas: "80000000000000", deposit: "0" } }],
-              },
-            ], (txHash) => {
-              pushLiveTraceEvent({ jobId, stage: "verification", status: "ok", title: "On-chain submit_delivery confirmed", txHash });
+            pushLiveTraceEvent({ jobId, stage: "verification", status: "running", title: `Operator signing submit_delivery on ${coreId}`, detail: `Hash: ${evidenceHash}` });
+            const res = await apiFetch("/api/near/vault/operator-submit-delivery", {
+              method: "POST",
+              body: JSON.stringify({ jobId, deliveryHash: evidenceHash }),
+            });
+            if (res.startWorkTxHash) {
+              pushLiveTraceEvent({
+                jobId,
+                stage: "escrow",
+                status: "ok",
+                title: "On-chain start_work confirmed",
+                txHash: res.startWorkTxHash,
+              });
+            }
+            pushLiveTraceEvent({
+              jobId,
+              stage: "verification",
+              status: "ok",
+              title: "On-chain submit_delivery confirmed",
+              txHash: res.txHash || undefined,
             });
           }
         };
@@ -4632,31 +4641,18 @@
             openWalletModal();
             return;
           }
-          if (accept && window.SnowMoonWalletSelector) {
-            const coreId = latestState?.environment?.mainnetCoreContractId || "core.cryptozax.near";
+          if (accept) {
             const coreCheck = await apiFetch(`/api/near/core-job?jobId=${encodeURIComponent(jobId)}`).catch(() => null);
-            let onChainStatus = coreCheck?.result?.data?.status || coreCheck?.job?.status || "";
-            if (onChainStatus === "Funded") {
-              showToast("Approve start_work in your NEAR wallet...");
-              await signPreparedTransactionsAndReconcile([
-                {
-                  receiverId: coreId,
-                  actions: [{ type: "FunctionCall", params: { methodName: "start_work", args: { job_id: jobId }, gas: "80000000000000", deposit: "0" } }],
-                },
-              ]);
-              onChainStatus = "InProgress";
-            }
-            if (onChainStatus === "InProgress") {
+            const onChainStatus = coreCheck?.result?.data?.status || coreCheck?.job?.status || "";
+            if (onChainStatus === "Funded" || onChainStatus === "InProgress") {
               const job = (latestState?.workforceJobs || []).find((j) => j.jobId === jobId);
               const evidenceHash = job?.evidenceHash || job?.outputHash || "";
               if (!evidenceHash) throw new Error("Missing evidenceHash for on-chain submit_delivery.");
-              showToast("Approve submit_delivery in your NEAR wallet...");
-              await signPreparedTransactionsAndReconcile([
-                {
-                  receiverId: coreId,
-                  actions: [{ type: "FunctionCall", params: { methodName: "submit_delivery", args: { job_id: jobId, delivery_hash: evidenceHash }, gas: "80000000000000", deposit: "0" } }],
-                },
-              ]);
+              showToast("Finalizing operator delivery on-chain...");
+              await apiFetch("/api/near/vault/operator-submit-delivery", {
+                method: "POST",
+                body: JSON.stringify({ jobId, deliveryHash: evidenceHash }),
+              });
             }
           }
           await apiFetch("/api/verification/verify", {

@@ -1188,6 +1188,51 @@ export function createSnowMoonApp(
         return;
       }
 
+      if (method === "POST" && pathname === "/api/near/vault/operator-start-work") {
+        assertNotRestrictedBeta();
+        const session = requireWalletSession();
+        const body = await readJsonBody(req);
+        const jobId = String(body.jobId || "").trim();
+        const wfJob = workforceEngine.getJob(jobId);
+        const coreCheck = await nearRpcAdapter.queryCoreJob(jobId);
+        const onChainCustomer = coreCheck.data?.customer;
+        const jobCustomer = wfJob?.customerAccountId || onChainCustomer;
+        if (
+          !isOperatorOrAdminAccount(session.accountId) &&
+          (!jobCustomer || session.accountId !== jobCustomer)
+        ) {
+          throw new Error(
+            `ERR_ACCOUNT_IMPERSONATION_BLOCKED: ${session.accountId} cannot start work for job ${jobId}.`
+          );
+        }
+        const result = await nearRpcAdapter.operatorStartWork(jobId);
+        sendJson(res, 200, result, reqOrigin, config.corsAllowedOrigin);
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/near/vault/operator-submit-delivery") {
+        assertNotRestrictedBeta();
+        const session = requireWalletSession();
+        const body = await readJsonBody(req);
+        const jobId = String(body.jobId || "").trim();
+        const deliveryHash = String(body.deliveryHash || "").trim();
+        const wfJob = workforceEngine.getJob(jobId);
+        const coreCheck = await nearRpcAdapter.queryCoreJob(jobId);
+        const onChainCustomer = coreCheck.data?.customer;
+        const jobCustomer = wfJob?.customerAccountId || onChainCustomer;
+        if (
+          !isOperatorOrAdminAccount(session.accountId) &&
+          (!jobCustomer || session.accountId !== jobCustomer)
+        ) {
+          throw new Error(
+            `ERR_ACCOUNT_IMPERSONATION_BLOCKED: ${session.accountId} cannot submit delivery for job ${jobId}.`
+          );
+        }
+        const result = await nearRpcAdapter.operatorSubmitDelivery(jobId, deliveryHash);
+        sendJson(res, 200, result, reqOrigin, config.corsAllowedOrigin);
+        return;
+      }
+
       // ── PHASE 3: WORKFORCE EXECUTION ENGINE ───────────────────────────────
       if (method === "GET" && pathname === "/api/workforce/workers") {
         sendJson(res, 200, { ok: true, workers: workforceEngine.listWorkers() }, reqOrigin);
