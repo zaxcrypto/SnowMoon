@@ -467,6 +467,36 @@ export const AGENT_TOOL_DEFINITIONS: OpenAIToolDefinition[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "scan_nearhunt_projects",
+      description:
+        "Scan and score all 2,400+ NEAR Hackathon projects from https://nearhunt.xyz/api/projects (paginating through all pages) and return a ranked shortlist of the strongest projects with descriptions, tracks, votes, repo URLs, and demo URLs.",
+      parameters: {
+        type: "object",
+        properties: {
+          track: {
+            type: "string",
+            description: "Optional hackathon track filter (e.g. 'ai', 'agents', 'defi', 'privacy', 'gaming')",
+          },
+          keywords: {
+            type: "array",
+            items: { type: "string" },
+            description: "Optional concept keywords to boost in ranking (e.g. ['agent', 'x402', 'escrow', 'intents', 'tee'])",
+          },
+          top_n: {
+            type: "number",
+            description: "Number of top candidate projects to return in the shortlist (default 35, max 50)",
+          },
+          max_pages: {
+            type: "number",
+            description: "Maximum API pages (100 projects/page) to scan (default 30, max 35)",
+          },
+        },
+      },
+    },
+  },
 ];
 
 export function isSafePublicHttpUrl(rawUrl: string): boolean {
@@ -1090,6 +1120,149 @@ export async function executeAgentTool(
         ok: false,
         output: `MARKETPLACE_FALLBACK_TO_NATIVE_AI: ${failoverRes.error || "Marketplace agent unavailable."}\nDo NOT retry marketplace hires or fail the job. Immediately complete the full task using SnowMoon's native NEAR AI Cloud + github_* + near_rpc_view tools and deliver the complete report.`,
         summary: `marketplace failover -> native AI`,
+      };
+    }
+
+    if (toolName === "scan_nearhunt_projects") {
+      const trackFilter = typeof rawArgs.track === "string" ? rawArgs.track.trim().toLowerCase() : "";
+      const keywords = Array.isArray(rawArgs.keywords)
+        ? rawArgs.keywords.map((k) => String(k).trim().toLowerCase()).filter(Boolean)
+        : [];
+      const topN = Math.min(50, Math.max(10, Number(rawArgs.top_n || 35)));
+      const maxPages = Math.min(35, Math.max(1, Number(rawArgs.max_pages || 30)));
+
+      interface NearHuntItem {
+        id?: string;
+        name?: string;
+        description?: string;
+        tracks?: string[];
+        votes?: number;
+        demo_url?: string;
+        repository_url?: string;
+        url?: string;
+        enrichment?: { retrieved_at?: string; sources?: string[] };
+      }
+
+      const seenIds = new Set<string>();
+      const allItems: NearHuntItem[] = [];
+      let cursor: string | null = null;
+      let pagesFetched = 0;
+      let reportedTotal: number | null = null;
+
+      for (let page = 0; page < maxPages; page++) {
+        const apiUrl = cursor
+          ? `https://nearhunt.xyz/api/projects?limit=100&cursor=${encodeURIComponent(cursor)}`
+          : `https://nearhunt.xyz/api/projects?limit=100`;
+        const resp = await ctx.fetchImpl(apiUrl, {
+          headers: { Accept: "application/json", "User-Agent": "SnowMoon-AI-Worker/1.0" },
+        });
+        if (!resp.ok) {
+          if (pagesFetched === 0) {
+            return {
+              ok: false,
+              output: `NearHunt API HTTP ${resp.status} ${resp.statusText}`,
+              summary: `nearhunt HTTP ${resp.status}`,
+            };
+          }
+          break;
+        }
+        const data = (await resp.json()) as {
+          items?: NearHuntItem[];
+          next_cursor?: string | null;
+          meta?: { total?: number };
+        };
+        pagesFetched += 1;
+        if (reportedTotal === null && typeof data.meta?.total === "number") {
+          reportedTotal = data.meta.total;
+        }
+        const items = Array.isArray(data.items) ? data.items : [];
+        for (const item of items) {
+          const dedupKey = String(item.id || item.name || "").trim().toLowerCase();
+          if (!dedupKey || seenIds.has(dedupKey)) continue;
+          seenIds.add(dedupKey);
+          allItems.push(item);
+        }
+        cursor = typeof data.next_cursor === "string" && data.next_cursor ? data.next_cursor : null;
+        if (!cursor || items.length === 0) break;
+      }
+
+      const trackCounts: Record<string, number> = {};
+      const scored = allItems.map((item) => {
+        const name = String(item.name || "").trim();
+        const desc = String(item.description || "").trim();
+        const tracks = Array.isArray(item.tracks) ? item.tracks.map(String) : [];
+        for (const t of tracks) {
+          trackCounts[t] = (trackCounts[t] || 0) + 1;
+        }
+        const votes = Number(item.votes || 0);
+        const hasRepo = Boolean(item.repository_url && String(item.repository_url).trim());
+        const hasDemo = Boolean(item.demo_url && String(item.demo_url).trim());
+        const hasEnrich = Boolean(item.enrichment?.retrieved_at);
+        const haystack = `${name} ${desc} ${tracks.join(" ")}`.toLowerCase();
+
+        let score = 0;
+        if (desc.length >= 40) score += 20;
+        if (desc.length >= 120) score += 15;
+        if (hasRepo) score += 20;
+        if (hasDemo) score += 15;
+        if (hasEnrich) score += 10;
+        score += Math.min(25, Math.max(0, votes) * 3);
+        if (trackFilter && tracks.some((t) => t.toLowerCase().includes(trackFilter))) {
+          score += 25;
+        }
+        for (const kw of keywords) {
+          if (haystack.includes(kw)) score += 10;
+        }
+
+        return {
+          score,
+          id: item.id || "",
+          name,
+          tracks,
+          votes,
+          demo_url: item.demo_url || null,
+          repository_url: item.repository_url || null,
+          url: item.url || (item.id ? `https://nearhunt.xyz/projects/${item.id}` : null),
+          description: desc.slice(0, 260),
+        };
+      });
+
+      const filtered = trackFilter
+        ? scored.filter((s) => s.tracks.some((t) => t.toLowerCase().includes(trackFilter)))
+        : scored;
+      const pool = filtered.length >= 10 ? filtered : scored;
+      pool.sort((a, b) => b.score - a.score || b.votes - a.votes);
+      const shortlist = pool.slice(0, topN).map((item, idx) => ({
+        rank: idx + 1,
+        ...item,
+      }));
+
+      ctx.onTrace?.({
+        stage: "workforce",
+        status: "ok",
+        title: `Scanned ${allItems.length} NEAR Hunt projects (${pagesFetched} pages)`,
+        detail: `Shortlisted top ${shortlist.length} candidates for final 10-project selection`,
+      });
+
+      return {
+        ok: true,
+        output: JSON.stringify(
+          {
+            source: "https://nearhunt.xyz/api/projects",
+            scannedAtUtc: new Date().toISOString(),
+            reportedTotal: reportedTotal ?? allItems.length,
+            totalScanned: allItems.length,
+            pagesFetched,
+            trackFilter: trackFilter || null,
+            topTracks: Object.entries(trackCounts)
+              .sort((a, b) => b[1] - a[1])
+              .slice(0, 8),
+            candidates: shortlist,
+          },
+          null,
+          2
+        ).slice(0, 16000),
+        summary: `scanned ${allItems.length} projects -> top ${shortlist.length}`,
       };
     }
 
