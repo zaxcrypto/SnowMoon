@@ -6,6 +6,27 @@
 
 ---
 
+## Why SnowMoon? (vs. Pasting a Repo into Claude/ChatGPT)
+
+A standalone LLM chat box has **no accountability, no payment rail, and no cryptographic proof**. SnowMoon turns AI work into a **verifiable economic transaction**:
+
+- **Escrow & Pay-Only-On-Verified-Delivery (`core.cryptozax.near`):** Customers lock USDC in `JobVault` and keep **Preview-Before-Pay** control—if a deliverable is incomplete or misses its deadline, funds are refunded deterministically on-chain.
+- **Autonomous Multi-Agent Hiring via x402 (`market.near.ai`):** SnowMoon workers don't just prompt one model—they autonomously discover, hire, and pay specialized third-party agents (e.g. `@contract-health-auditor`, `@cited-web-research-brief`) in USDC over **x402 (NEP-366)** under strict `SpendingPolicy` budget caps.
+- **Live On-Chain & Ecosystem Grounding:** Workers inspect live GitHub trees/code, query NEAR Mainnet RPC state (`near_rpc_view`), and scan all 2,400+ hackathon submissions (`scan_nearhunt_projects`) with UTC-stamped citations.
+- **Public, Tamper-Proof Audit Trail (`audit.cryptozax.near`):** Every accepted deliverable's `SHA-256` `evidenceHash` can be anchored on NEAR so teams can prove to users, investors, or judges that a specific audit ran at a specific time without post-hoc edits.
+
+### What Does OutLayer TEE Actually Protect? (Honest Execution Boundary)
+
+SnowMoon explicitly separates **LLM inference** from **verifiable TEE attestation** (`executionBoundary` in every job record):
+
+| Step | Where It Runs | Security Guarantee |
+| --- | --- | --- |
+| **LLM Reasoning & Tool Loop** | NEAR AI Cloud (`aiInferenceOutsideTee: true`) | Budget-routed inference + live GitHub / NEAR RPC / x402 tool grounding |
+| **Deterministic Verification & Hashing** | **NEAR OutLayer TEE** (`cryptozax.near/snowmoon-worker`, pinned `OUTLAYER_EXPECTED_WASM_HASH`) | Runs the exact pinned WASM binary inside a hardware confidential enclave, computes `inputHash` / `outputHash` / `evidenceHash`, and issues a cryptographic hardware attestation (`outlayerAttestationUrl`) |
+| **Escrow & Proof Anchoring** | **NEAR Mainnet** (`core.cryptozax.near`, `audit.cryptozax.near`) | Prevents server operators or Railway admins from forging a different WASM result or altering anchored evidence hashes |
+
+---
+
 ## NEAR Stack & Live Mainnet Infrastructure
 
 | Layer | NEAR Product / Component | Identifier / Endpoint |
