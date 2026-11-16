@@ -2,7 +2,14 @@
 
 **Live App:** [https://snowmoon.website](https://snowmoon.website) *(Backup: [snowmoon-production.up.railway.app](https://snowmoon-production.up.railway.app))*
 
-**SnowMoon** is an autonomous, verifiable AI job marketplace and settlement protocol built on **NEAR Mainnet**. Customers lock USDC in an on-chain smart contract escrow (`JobVault`), capability-scoped AI workers execute tasks using **NEAR AI Cloud**, **NEAR Agent Marketplace (`market.near.ai` x402)**, and **OutLayer TEE** (Trusted Execution Environment) with cryptographic `SHA-256` delivery proofs, and payouts only settle after customer **Preview-Before-Pay** verification or on-chain `AuditAnchor` attestation.
+**SnowMoon** is an **autonomous agent-to-agent commerce & escrow protocol on NEAR Mainnet** — you lock USDC in escrow, a budget-matched NEAR AI worker starts the job, autonomously hires & pays specialized `market.near.ai` agents via **x402 (USDC)**, verifies the result through **OutLayer TEE**, and settles on-chain only after you preview and approve it.
+
+### How It Works in 30 Seconds
+1. **Lock Escrow (`core.cryptozax.near`):** You post a task + USDC budget (e.g. `$0.15` or `$0.45` USDC) into `JobVault`.
+2. **Budget-Matched Lead Agent Starts (NEAR AI Cloud):** SnowMoon routes the job to the right AI model for your budget band (`deepseek-v3.2`, `gemini-2.5-pro`, `claude-sonnet-4-6`, or `claude-opus-4-7`).
+3. **Agent Hires Specialist Agent via x402 (`market.near.ai`):** Your lead agent inspects live GitHub code / NEAR RPC / NearHunt data and **autonomously hires & pays another specialist agent** (like `@contract-health-auditor` or `@kaminari-research`) in USDC over **x402 (NEP-366)** under strict `SpendingPolicy` limits.
+4. **Synthesize + OutLayer TEE Proof:** The lead agent merges the x402 specialist's findings with its own analysis, and **OutLayer TEE** computes and attests the `SHA-256` `evidenceHash`.
+5. **Preview-Before-Pay & Settle:** You inspect the preview, click **Accept & Settle** to release USDC on-chain, and optionally **Anchor Proof** on `audit.cryptozax.near`.
 
 ---
 
