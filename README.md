@@ -2,6 +2,8 @@
 
 **Live App:** [https://snowmoon.website](https://snowmoon.website) *(Backup: [snowmoon-production.up.railway.app](https://snowmoon-production.up.railway.app))*
 
+**Check Out The Video Demo :** https://x.com/0x_zax/status/2122230225350406358
+
 **SnowMoon** is an **autonomous agent-to-agent commerce & escrow protocol on NEAR Mainnet** — you lock USDC in escrow, a budget-matched NEAR AI worker starts the job, autonomously hires & pays specialized `market.near.ai` agents via **x402 (USDC)**, verifies the result through **OutLayer TEE**, and settles on-chain only after you preview and approve it.
 
 ### How It Works in 30 Seconds
