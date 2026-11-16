@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <clipPath id="orbClip">
+      <circle cx="64" cy="64" r="64" />
+    </clipPath>
+    <radialGradient id="tealGlow" cx="38%" cy="62%" r="65%" fx="34%" fy="64%">
+      <stop offset="0%" stop-color="#a7fff0" />
+      <stop offset="32%" stop-color="#38e2c8" />
+      <stop offset="68%" stop-color="#0ea593" />
+      <stop offset="90%" stop-color="#055853" />
+      <stop offset="100%" stop-color="#042f2d" />
+    </radialGradient>
+  </defs>
+  <g clip-path="url(#orbClip)">
+    <circle cx="64" cy="64" r="64" fill="#061918" />
+    <circle cx="53" cy="74" r="61" fill="url(#tealGlow)" />
+    <rect x="35.5" y="40" width="13" height="28" rx="6.5" fill="#061918" transform="rotate(33 42 54)" />
+    <rect x="57.5" y="51" width="13" height="28" rx="6.5" fill="#061918" transform="rotate(33 64 65)" />
+  </g>
+</svg>

@@ -3145,6 +3145,7 @@ export function createSnowMoonApp(
         "/privacy": "privacy.html",
         "/risk": "risk.html",
         "/security": "security.html",
+        "/favicon.ico": "favicon.svg",
       };
       const mappedFile = cleanRouteMap[pathname];
       const filePath = mappedFile
