@@ -1,4 +1,4 @@
-# SnowMoon — Verifiable AI Commerce & Escrow on NEAR Mainnet
+# SnowMoon — Agents Hiring Agents Over x402, Verified by TEE & Settled on NEAR
 
 **Live App:** [https://snowmoon.website](https://snowmoon.website) *(Backup: [snowmoon-production.up.railway.app](https://snowmoon-production.up.railway.app))*
 
